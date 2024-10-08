@@ -11,10 +11,10 @@ class Config:
 
     source_lang: str = "en"
     target_lang: str = "ta" # AI4Bharat Identifier
-    
+
     src_vocab_size = 30000
     tgt_vocab_size = 30000
-    
+
     use_bit_linear: bool = False
 
     d_model: int = 512
@@ -23,14 +23,14 @@ class Config:
     d_ff: int = 2048
 
     # model config
-    n_samples = 50000000
+    n_samples = 5264867
     max_length: int = 512
     batch_size: int = 16
-    n_steps = n_samples // batch_size
     learning_rate: float = 5e-5
     num_train_epochs: int = 3
     use_custom_linear: bool = False
     output_dir: str = "./output"
+    n_steps = (n_samples * num_train_epochs) // batch_size
 
 
     # Weights & Biases settings

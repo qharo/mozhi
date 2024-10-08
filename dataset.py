@@ -7,21 +7,21 @@ import random
 
 # split dataset
 def split_dataset(dataset, train_size=0.7, val_size=0.15, test_size=0.15, seed=42):
-   
+
     stream = dataset.shuffle(seed=seed)
 
     # size of the dataset
-    total_size = 50000000
-   
+    total_size = config.n_samples
+
     # Calculate split sizes
     train_end = int(total_size * train_size)
     val_end = train_end + int(total_size * val_size)
-    
+
     # Create split datasets
     train_dataset = stream.take(train_end)
     val_dataset = stream.skip(train_end).take(val_end - train_end)
     test_dataset = stream.skip(val_end)
-    
+
     return {
         "train": train_dataset,
         "val": val_dataset,
@@ -61,4 +61,5 @@ def download_dataset():
         streaming=True,
         trust_remote_code=True
     )
+    print(len(dataset))
     return dataset
