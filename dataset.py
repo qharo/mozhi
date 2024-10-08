@@ -33,7 +33,6 @@ def download_dataset():
     # get streaming dataset
     dataset = load_dataset("ai4bharat/samanantar",
         f"{config.target_lang}",
-        split="train",
         streaming=True,
         trust_remote_code=True
     )
