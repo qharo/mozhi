@@ -1,5 +1,5 @@
 from tracking import compute_metrics, WandbTrainer
-from dataset import download_dataset, build_tokenizer
+from dataset import download_dataset, build_tokenizer, split_dataset
 from config import config
 import wandb
 from model import create_model
@@ -14,11 +14,14 @@ def main():
 
     # create model
     model = create_model()
-    print(model)
 
     # get tokenizer from source and target vocabularies
-    src_tkizer = build_tokenizer(dataset['train'], 'src', 'data/src_tkizer', False, 3000)
-    tgt_tkizer = build_tokenizer(dataset['train'], 'tgt', 'data/tgt_tkizer', False, 3000)
+    #src_tkizer = build_tokenizer(dataset, 'src', 'data/src_tkizer', False, 3000)
+    #tgt_tkizer = build_tokenizer(dataset, 'tgt', 'data/tgt_tkizer', False, 3000)
+
+    dataset_splits = split_dataset(dataset) 
+    train_dataset = dataset_splits['train']
+    eval_dataset = dataset_splits['val']
 
     # setup wandb
     # if config.use_wandb:
@@ -34,6 +37,7 @@ def main():
         learning_rate=config.learning_rate,
         weight_decay=0.01,
         evaluation_strategy="steps",
+        max_steps = config.n_steps,
         eval_steps=1000,
         save_strategy="steps",
         save_steps=1000,
@@ -44,8 +48,8 @@ def main():
     trainer = WandbTrainer(
         model=model,
         args=training_args,
-        train_dataset=dataset['train'],
-        eval_dataset=dataset['test'],
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
         compute_metrics=compute_metrics,
     )
 

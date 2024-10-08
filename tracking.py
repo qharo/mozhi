@@ -1,34 +1,51 @@
-from datasets import load_metric
+from evaluate import load
 import torch
 import psutil
 import GPUtil
-from transformers import Trainer
+from transformers import Trainer, TrainingArguments
+from config import config
+import wandb
+import psutil
+import GPUtil
+import time
+from typing import Dict, List
 
-def compute_metrics(eval_pred):
+def postprocess_text(preds, labels):
+    preds = [pred.strip() for pred in preds]
+    labels = [[label.strip()] for label in labels]
+    return preds, labels
+
+def compute_metrics(eval_preds: List[Dict], tgt_tokenizer) -> Dict[str, float]:
     metric = load_metric("sacrebleu")
-    predictions, labels = eval_pred
-    predictions = torch.argmax(predictions, axis=-1)
-
-    # Remove ignored index (special tokens)
-    predictions = [
-        [tgt_tokenizer.decode([p]) for p in prediction if p != -100]
-        for prediction in predictions
-    ]
-    references = [
-        [[tgt_tokenizer.decode([l]) for l in label if l != -100]]
-        for label in labels
-    ]
-
-    return metric.compute(predictions=predictions, references=references)
+    
+    predictions = []
+    references = []
+    
+    for batch in eval_preds:
+        preds = batch["predictions"]
+        labels = batch["labels"]
+        
+        decoded_preds = tgt_tokenizer.batch_decode(preds, skip_special_tokens=True)
+        decoded_labels = tgt_tokenizer.batch_decode(labels, skip_special_tokens=True)
+        
+        decoded_preds, decoded_labels = postprocess_text(decoded_preds, decoded_labels)
+        
+        predictions.extend(decoded_preds)
+        references.extend(decoded_labels)
+    
+    result = metric.compute(predictions=predictions, references=references)
+    return {"bleu": result["score"]}
 
 class WandbTrainer(Trainer):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, tgt_tokenizer=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.log_interval = 100  # Log every 100 steps
+        self.tgt_tokenizer = tgt_tokenizer
+        self.eval_preds = []
 
     def training_step(self, model, inputs):
         outputs = super().training_step(model, inputs)
-
+        
         if self.state.global_step % self.log_interval == 0:
             system_metrics = get_system_metrics()
             wandb.log({
@@ -37,24 +54,46 @@ class WandbTrainer(Trainer):
                 'train/step': self.state.global_step,
                 **system_metrics
             })
-
+        
         return outputs
 
-    def evaluate(self, *args, **kwargs):
-        output = super().evaluate(*args, **kwargs)
+    def evaluation_loop(self, dataloader, description, prediction_loss_only=None, ignore_keys=None, metric_key_prefix="eval"):
+        self.eval_preds = []
+        eval_losses = []
 
-        metrics = output.metrics
-        system_metrics = get_system_metrics()
+        self.model.eval()
+        for step, inputs in enumerate(dataloader):
+            with torch.no_grad():
+                outputs = self.model(**inputs)
+            
+            loss = outputs.loss
+            eval_losses.append(loss.item())
+            
+            logits = outputs.logits
+            predictions = torch.argmax(logits, dim=-1)
+            
+            self.eval_preds.append({
+                "predictions": predictions.detach().cpu(),
+                "labels": inputs["labels"].detach().cpu()
+            })
 
-        wandb.log({
-            'eval/loss': metrics['eval_loss'],
-            'eval/bleu': metrics['eval_bleu'],
-            'eval/step': self.state.global_step,
-            **system_metrics
-        })
+            if step % 10 == 0:
+                self.log({"eval_loss": sum(eval_losses) / len(eval_losses)})
 
-        return output
+        metrics = compute_metrics(self.eval_preds, self.tgt_tokenizer)
+        metrics["loss"] = sum(eval_losses) / len(eval_losses)
 
+        for key, value in metrics.items():
+            self.log({f"{metric_key_prefix}_{key}": value})
+
+        return metrics
+
+    def log(self, logs: Dict[str, float]) -> None:
+        if self.state.epoch is not None:
+            logs["epoch"] = round(self.state.epoch, 2)
+
+        output = {**logs, **get_system_metrics()}
+        wandb.log(output)
 
 def get_system_metrics():
     cpu_percent = psutil.cpu_percent()
@@ -76,3 +115,4 @@ def get_system_metrics():
         'memory_usage': memory_percent,
         **gpu_metrics
     }
+

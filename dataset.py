@@ -1,7 +1,33 @@
+from tqdm import tqdm
 import os
 from datasets import load_dataset
 from transformers import MarianTokenizer, AutoTokenizer
 from config import config
+import random
+
+# split dataset
+def split_dataset(dataset, train_size=0.7, val_size=0.15, test_size=0.15, seed=42):
+   
+    stream = dataset.shuffle(seed=seed)
+
+    # size of the dataset
+    total_size = 50000000
+   
+    # Calculate split sizes
+    train_end = int(total_size * train_size)
+    val_end = train_end + int(total_size * val_size)
+    
+    # Create split datasets
+    train_dataset = stream.take(train_end)
+    val_dataset = stream.skip(train_end).take(val_end - train_end)
+    test_dataset = stream.skip(val_end)
+    
+    return {
+        "train": train_dataset,
+        "val": val_dataset,
+        "test": test_dataset
+    }
+
 
 # given the dataset, builds a tokenizer from vocab
 def build_tokenizer(dataset, ext: str, tkizer_save_path: str, tkizer_to_save: bool = False, vocab_size: int = 50000) -> MarianTokenizer:
@@ -27,12 +53,11 @@ def build_tokenizer(dataset, ext: str, tkizer_save_path: str, tkizer_to_save: bo
 
 # downloads HF dataset, saves it offline
 def download_dataset():
-    # make data folder
-    os.makedirs("data", exist_ok=True)
 
     # get streaming dataset
     dataset = load_dataset("ai4bharat/samanantar",
         f"{config.target_lang}",
+        split="train",
         streaming=True,
         trust_remote_code=True
     )

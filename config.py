@@ -4,7 +4,7 @@ from dataclasses import dataclass
 class Config:
     model_name: str = "google-t5/t5-base"
 
-    tkizer_save: bool = False
+    tkizer_save: bool = True
 
     src_tkizer_save_path: str = 'data/src_tkizer'
     tgt_tkizer_save_path: str = 'data/tgt_tkizer'
@@ -23,8 +23,10 @@ class Config:
     d_ff: int = 2048
 
     # model config
+    n_samples = 50000000
     max_length: int = 512
     batch_size: int = 16
+    n_steps = n_samples // batch_size
     learning_rate: float = 5e-5
     num_train_epochs: int = 3
     use_custom_linear: bool = False

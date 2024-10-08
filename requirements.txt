@@ -1,9 +1,12 @@
+accelerate==1.0.0
 datasets==3.0.1
+evaluate==0.4.3
+GPUtil==1.4.0
 numpy==2.1.2
 psutil==6.0.0
 requests==2.32.3
 tokenizers==0.20.0
-torch==2.2.2
+torch==2.4.1
 tqdm==4.66.5
 transformers==4.45.2
 wandb==0.18.3
