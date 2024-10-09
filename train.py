@@ -1,5 +1,5 @@
 from tracking import WandbTrainer
-from dataset import build_tkizers, download_dataset, tkize_dataset, build_tkizers, prepare_dataloaders, split_dataset
+from dataset import build_tkizers, download_dataset, tkize_dataset, build_tkizers, split_dataset
 from config import config
 import wandb
 from model import create_model
@@ -23,42 +23,6 @@ def main():
     train_dataloader = dataset_splits['train']
     test_dataloader = dataset_splits['test']
 
-    # create model
-    model = create_model()
-
-    if config.use_wandb:
-        wandb.init(project=config.wandb_project, entity=config.wandb_entity)
-        wandb.config.update(config)
-
-    training_args = TrainingArguments(
-        output_dir=config.output_dir,
-        num_train_epochs=config.num_train_epochs,
-        per_device_train_batch_size=config.batch_size,
-        per_device_eval_batch_size=config.batch_size,
-        learning_rate=config.learning_rate,
-        weight_decay=0.01,
-        eval_strategy="steps",
-        eval_steps=1000,
-        save_strategy="steps",
-        save_steps=1000,
-        load_best_model_at_end=True,
-        report_to="wandb" if config.use_wandb else None,
-    )
-
-    trainer = WandbTrainer(
-        model=model,
-        args=training_args,
-        train_dataset=train_dataloader,
-        eval_dataset=test_dataloader,
-        tgt_tokenizer=tgt_tkizer
-    )
-
-    accelerator = Accelerator()
-    trainer = accelerator.prepare(trainer)
-    trainer.train()
-
-    if config.use_wandb:
-        wandb.finish()
 
 
 if __name__ == '__main__':

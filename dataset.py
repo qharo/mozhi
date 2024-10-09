@@ -1,36 +1,15 @@
 from tqdm import tqdm
 import os
-from datasets import load_dataset, load_from_disk, Dataset
+from typing import Dict
+from datasets import load_dataset, load_from_disk, IterableDataset
 from torch.utils.data import DataLoader
 from transformers import MarianTokenizer, AutoTokenizer
 from config import config
 import random
 import time
 
-
-# def tkize_dataset(examples, src_tkizer, tgt_tkizer):
-#     src_tkized = src_tkizer(
-#         examples["src"],
-#         padding="max_length",
-#         truncation=True,
-#         max_length=config.max_length,
-#         return_tensors="pt"
-#     )
-#     tgt_tkized = tgt_tkizer(
-#         examples["tgt"],
-#         padding="max_length",
-#         truncation=True,
-#         max_length=config.max_length,
-#         return_tensors="pt"
-#     )
-#     return {
-#         "input_ids": src_tkized["input_ids"],
-#         "attention_mask": src_tkized["attention_mask"],
-#         "labels": tgt_tkized["input_ids"]
-#     }
-
-def tkize_dataset(dataset, src_tkizer, tgt_tkizer):
-
+# -> IterableDataset (tokenized)
+def tkize_dataset(dataset, src_tkizer, tgt_tkizer) -> IterableDataset:
     def tkize_sample(examples):
         src_tkized = src_tkizer(
             examples["src"],
@@ -52,76 +31,45 @@ def tkize_dataset(dataset, src_tkizer, tgt_tkizer):
             "labels": tgt_tkized["input_ids"]
         }
 
+    return IterableDataset.from_generator(
+        lambda: map(tkize_sample, dataset)
+    )
+
     return dataset.map(
         tkize_sample,
         batched=True,
         remove_columns=dataset.column_names
     )
 
-class TokenizedDataset(Dataset):
-    def __init__(self, data, src_tokenizer, tgt_tokenizer):
-        super().__init__()
-        self._data = data
-        self.src_tokenizer = src_tokenizer
-        self.tgt_tokenizer = tgt_tokenizer
-        self.max_length = config.max_length
-
-    @property
-    def data(self):
-        return self._data
-
-    def __len__(self):
-        return len(self._data)
-
-    def __getitem__(self, idx):
-        item = self._data[idx]
-        src_encoding = self.src_tokenizer(
-            item['src'],
-            max_length=self.max_length,
-            padding='max_length',
-            truncation=True,
-            return_tensors='pt'
-        )
-        tgt_encoding = self.tgt_tokenizer(
-            item['tgt'],
-            max_length=self.max_length,
-            padding='max_length',
-            truncation=True,
-            return_tensors='pt'
-        )
-        return {
-            'input_ids': src_encoding['input_ids'].squeeze(),
-            'attention_mask': src_encoding['attention_mask'].squeeze(),
-            'labels': tgt_encoding['input_ids'].squeeze()
-        }
 
 # -> Dataset object
-def download_dataset():
+def download_dataset() -> IterableDataset:
     # Check if the dataset exists in the specified location
-    if config.data_save and os.path.exists(config.data_save_path):
-        print(f"Loading existing dataset from {config.data_save_path}")
-        return load_from_disk(config.data_save_path)
+    # if config.data_save and os.path.exists(config.data_save_path):
+    #     print(f"Loading existing dataset from {config.data_save_path}")
+    #     return load_from_disk(config.data_save_path)
 
     # If not, download the dataset
     dataset = load_dataset(
         "ai4bharat/samanantar",
         f"{config.target_lang}",
         split="train",
+        streaming=True,
         trust_remote_code=True
     )
 
     # Save the dataset to disk
-    if config.data_save:
-        os.makedirs(config.data_save_path)
-        print(f"Saving dataset to {config.data_save_path}")
-        dataset.save_to_disk(config.data_save_path)
+    # if config.data_save:
+    #     os.makedirs(config.data_save_path)
+    #     print(f"Saving dataset to {config.data_save_path}")
+    #     dataset.save_to_disk(config.data_save_path)
 
-    print(f"Dataset 'ai4bharat/samanantar' downloaded and saved!")
+    # print(f"Dataset 'ai4bharat/samanantar' downloaded and saved!")
     return dataset
 
 
 # -> Dict[str: Dataset]
-def split_dataset(dataset, train_size=0.7, val_size=0.15, test_size=0.15, seed=42):
+def split_dataset(dataset, train_size=0.7, val_size=0.15, test_size=0.15, seed=42) -> Dict[str, IterableDataset]:
     dataset = dataset.shuffle(seed=seed)
     total_size = len(dataset)
 
@@ -140,7 +88,7 @@ def split_dataset(dataset, train_size=0.7, val_size=0.15, test_size=0.15, seed=4
     }
 
 # -> T5Tokenizers
-def build_tkizers(dataset: Dataset):
+def build_tkizers(dataset: IterableDataset):
     # load directly if saved
     if config.tkizer_save:
         if os.path.exists(config.src_tkizer_save_path) and os.path.exists(config.tgt_tkizer_save_path):
@@ -175,14 +123,14 @@ def build_tkizers(dataset: Dataset):
 
     return src_tkizer, tgt_tkizer
 
-# -> Dict[str, DataLoader]
-def prepare_dataloaders(dataset_splits, src_tokenizer, tgt_tokenizer):
-    dataloaders = {}
-    for split, data in tqdm(dataset_splits.items(), total=len(dataset_splits.keys()), desc="Preparing dataloaders..."):
-        custom_dataset = TokenizedDataset(data, src_tokenizer, tgt_tokenizer, config.max_length)
-        dataloaders[split] = DataLoader(custom_dataset, batch_size=config.batch_size, shuffle=(split == 'train'))
-    print("Dataloaders prepared")
-    return dataloaders
+# # -> Dict[str, DataLoader]
+# def prepare_dataloaders(dataset_splits, src_tokenizer, tgt_tokenizer):
+#     dataloaders = {}
+#     for split, data in tqdm(dataset_splits.items(), total=len(dataset_splits.keys()), desc="Preparing dataloaders..."):
+#         custom_dataset = TokenizedDataset(data, src_tokenizer, tgt_tokenizer, config.max_length)
+#         dataloaders[split] = DataLoader(custom_dataset, batch_size=config.batch_size, shuffle=(split == 'train'))
+#     print("Dataloaders prepared")
+#     return dataloaders
 
 # # split dataset
 # def split_dataset(dataset, train_size=0.7, val_size=0.15, test_size=0.15, seed=42):
@@ -248,3 +196,63 @@ def prepare_dataloaders(dataset_splits, src_tokenizer, tgt_tokenizer):
 #         trust_remote_code=True
 #     )
 #     return dataset
+
+
+# def tkize_dataset(examples, src_tkizer, tgt_tkizer):
+#     src_tkized = src_tkizer(
+#         examples["src"],
+#         padding="max_length",
+#         truncation=True,
+#         max_length=config.max_length,
+#         return_tensors="pt"
+#     )
+#     tgt_tkized = tgt_tkizer(
+#         examples["tgt"],
+#         padding="max_length",
+#         truncation=True,
+#         max_length=config.max_length,
+#         return_tensors="pt"
+#     )
+#     return {
+#         "input_ids": src_tkized["input_ids"],
+#         "attention_mask": src_tkized["attention_mask"],
+#         "labels": tgt_tkized["input_ids"]
+#     }
+
+
+# class TokenizedDataset(Dataset):
+#     def __init__(self, data, src_tokenizer, tgt_tokenizer):
+#         super().__init__()
+#         self._data = data
+#         self.src_tokenizer = src_tokenizer
+#         self.tgt_tokenizer = tgt_tokenizer
+#         self.max_length = config.max_length
+
+#     @property
+#     def data(self):
+#         return self._data
+
+#     def __len__(self):
+#         return len(self._data)
+
+#     def __getitem__(self, idx):
+#         item = self._data[idx]
+#         src_encoding = self.src_tokenizer(
+#             item['src'],
+#             max_length=self.max_length,
+#             padding='max_length',
+#             truncation=True,
+#             return_tensors='pt'
+#         )
+#         tgt_encoding = self.tgt_tokenizer(
+#             item['tgt'],
+#             max_length=self.max_length,
+#             padding='max_length',
+#             truncation=True,
+#             return_tensors='pt'
+#         )
+#         return {
+#             'input_ids': src_encoding['input_ids'].squeeze(),
+#             'attention_mask': src_encoding['attention_mask'].squeeze(),
+#             'labels': tgt_encoding['input_ids'].squeeze()
+#         }
