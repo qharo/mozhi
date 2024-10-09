@@ -105,7 +105,7 @@ def split_iterable_dataset(dataset: IterableDataset, train_size=0.7, val_size=0.
             yield (random.choices(list(splits.keys()), weights=list(splits.values()))[0], item)
 
     splits = {"train": train_size, "val": val_size, "test": test_size}
-    
+
     def create_subset(split_name: str):
         for split, item in split_generator(dataset, splits):
             if split == split_name:
@@ -124,7 +124,6 @@ def split_dataset(dataset, train_size=0.7, val_size=0.15, test_size=0.15, seed=4
 
     train_end = int(total_size * train_size)
     val_end = train_end + int(total_size * val_size)
-    time1 = time.time()
     train_dataset = dataset[:train_end]
     val_dataset = dataset[train_end:val_end]
     test_dataset = dataset[val_end:]
@@ -169,8 +168,8 @@ def build_tkizers(dataset: IterableDataset):
 
     # Add extra_id tokens (sentinel tokens)
     num_extra_ids = 100  # T5 typically uses 100 sentinel tokens
-    src_tokenizer.add_special_tokens({'additional_special_tokens': [f'<extra_id_{i}>' for i in range(num_extra_ids)]})
-    tgt_tokenizer.add_special_tokens({'additional_special_tokens': [f'<extra_id_{i}>' for i in range(num_extra_ids)]})
+    src_tkizer.add_special_tokens({'additional_special_tokens': [f'<extra_id_{i}>' for i in range(num_extra_ids)]})
+    tgt_tkizer.add_special_tokens({'additional_special_tokens': [f'<extra_id_{i}>' for i in range(num_extra_ids)]})
 
     print(f"Tokenizers built")
 
