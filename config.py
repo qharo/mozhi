@@ -2,8 +2,13 @@ from dataclasses import dataclass
 
 @dataclass
 class Config:
+    # dataset config
+    data_save: bool = True
+    data_save_path: str = 'data/dataset'
+
+
     # tkizer config
-    tkizer_save: bool = False
+    tkizer_save: bool = True
     src_tkizer_save_path: str = 'data/src_tkizer'
     tgt_tkizer_save_path: str = 'data/tgt_tkizer'
     source_lang: str = "en"
@@ -24,7 +29,7 @@ class Config:
     batch_size: int = 16
     learning_rate: float = 5e-5
     num_train_epochs: int = 3
-    output_dir: str = "/data/"
+    output_dir: str = "data/training"
 
     # W&B settings
     use_wandb: bool = False
