@@ -16,18 +16,17 @@ def main():
     model = create_model()
 
     # get tokenizer from source and target vocabularies
-    #src_tkizer = build_tokenizer(dataset, 'src', 'data/src_tkizer', False, 3000)
-    #tgt_tkizer = build_tokenizer(dataset, 'tgt', 'data/tgt_tkizer', False, 3000)
+    src_tkizer = build_tokenizer(dataset, 'src', 'data/src_tkizer', False, config.src_vocab_size)
+    tgt_tkizer = build_tokenizer(dataset, 'tgt', 'data/tgt_tkizer', False, config.tgt_vocab_size)
 
     dataset_splits = split_dataset(dataset) 
     train_dataset = dataset_splits['train']
     eval_dataset = dataset_splits['val']
 
-    # setup wandb
-    # if config.use_wandb:
-    #     wandb.init(project=config.wandb_project, entity=config.wandb_entity)
-    #     wandb.config.update(config)
 
+    if config.use_wandb:
+        wandb.init(project=config.wandb_project, entity=config.wandb_entity)
+        wandb.config.update(config)
 
     training_args = TrainingArguments(
         output_dir=config.output_dir,
@@ -35,9 +34,9 @@ def main():
         per_device_train_batch_size=config.batch_size,
         per_device_eval_batch_size=config.batch_size,
         learning_rate=config.learning_rate,
-        weight_decay=0.01,
-        evaluation_strategy="steps",
         max_steps = config.n_steps,
+        weight_decay=0.01,
+        eval_strategy="steps",
         eval_steps=1000,
         save_strategy="steps",
         save_steps=1000,
@@ -50,9 +49,15 @@ def main():
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
-        compute_metrics=compute_metrics,
+        tgt_tokenizer=tgt_tokenizer
     )
 
+    accelerator = Accelerator()
+    trainer = accelerator.prepare(trainer)
+    trainer.train()
+
+    if config.use_wandb:
+        wandb.finish()
 
 
 if __name__ == '__main__':
