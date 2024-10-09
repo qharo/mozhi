@@ -5,6 +5,7 @@ GPUtil==1.4.0
 numpy==2.1.2
 psutil==6.0.0
 requests==2.32.3
+sacrebleu==2.4.3
 tokenizers==0.20.0
 torch==2.4.1
 tqdm==4.66.5

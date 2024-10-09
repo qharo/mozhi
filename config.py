@@ -5,7 +5,7 @@ class Config:
     # dataset config
     data_save: bool = True
     data_save_path: str = 'data/dataset'
-
+    n_samples = 5264867
 
     # tkizer config
     tkizer_save: bool = True
@@ -30,6 +30,7 @@ class Config:
     learning_rate: float = 5e-5
     num_train_epochs: int = 3
     output_dir: str = "data/training"
+    n_steps = (n_samples * num_train_epochs) // batch_size
 
     # W&B settings
     use_wandb: bool = False

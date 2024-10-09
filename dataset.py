@@ -6,10 +6,39 @@ from torch.utils.data import DataLoader
 from transformers import MarianTokenizer, AutoTokenizer
 from config import config
 import random
-import time
+
+def tkize_dataset(dataset, src_tkizer, tgt_tkizer) -> IterableDataset:
+    def tkize_sample(example):
+        src_tkized = src_tkizer(
+            example["src"],
+            padding="max_length",
+            truncation=True,
+            max_length=config.max_length,
+            return_tensors="pt"
+        )
+        tgt_tkized = tgt_tkizer(
+            example["tgt"],
+            padding="max_length",
+            truncation=True,
+            max_length=config.max_length,
+            return_tensors="pt"
+        )
+        return {
+            "input_ids": src_tkized["input_ids"].squeeze(0),
+            "attention_mask": src_tkized["attention_mask"].squeeze(0),
+            "labels": tgt_tkized["input_ids"].squeeze(0)
+        }
+
+    return IterableDataset.from_generator(lambda: map(tkize_sample, dataset))
+
+# Debugging wrapper
+def debug_dataset(dataset):
+    for batch in dataset:
+        print(f"Dataset output shapes: {', '.join(f'{k}: {v.shape}' for k, v in batch.items())}")
+        return batch  # Just print the first batch and stop
 
 # -> IterableDataset (tokenized)
-def tkize_dataset(dataset, src_tkizer, tgt_tkizer) -> IterableDataset:
+def tkize_dataset2(dataset, src_tkizer, tgt_tkizer) -> IterableDataset:
     def tkize_sample(examples):
         src_tkized = src_tkizer(
             examples["src"],
@@ -68,6 +97,26 @@ def download_dataset() -> IterableDataset:
     return dataset
 
 
+def split_iterable_dataset(dataset: IterableDataset, train_size=0.7, val_size=0.15, test_size=0.15, seed=42) -> Dict[str, IterableDataset]:
+    random.seed(seed)
+
+    def split_generator(dataset: IterableDataset, splits: Dict[str, float]):
+        for item in dataset:
+            yield (random.choices(list(splits.keys()), weights=list(splits.values()))[0], item)
+
+    splits = {"train": train_size, "val": val_size, "test": test_size}
+    
+    def create_subset(split_name: str):
+        for split, item in split_generator(dataset, splits):
+            if split == split_name:
+                yield item
+
+    return {
+        "train": IterableDataset.from_generator(lambda: create_subset("train")),
+        "val": IterableDataset.from_generator(lambda: create_subset("val")),
+        "test": IterableDataset.from_generator(lambda: create_subset("test"))
+    }
+
 # -> Dict[str: Dataset]
 def split_dataset(dataset, train_size=0.7, val_size=0.15, test_size=0.15, seed=42) -> Dict[str, IterableDataset]:
     dataset = dataset.shuffle(seed=seed)
@@ -106,9 +155,23 @@ def build_tkizers(dataset: IterableDataset):
     src_tkizer = pretrained_tkizer.train_new_from_iterator(src_iterator, vocab_size=config.src_vocab_size)
     tgt_tkizer = pretrained_tkizer.train_new_from_iterator(tgt_iterator, vocab_size=config.tgt_vocab_size)
 
+    # Ensure all necessary special tokens are present
+    special_tokens = {
+        'eos_token': '</s>',
+        'unk_token': '<unk>',
+        'pad_token': '<pad>',
+    }
+
     # add special tokens
-    src_tkizer.add_special_tokens({'unk_token': '<unk>'})
-    tgt_tkizer.add_special_tokens({'unk_token': '<unk>'})
+    src_tkizer.add_special_tokens(special_tokens)
+    tgt_tkizer.add_special_tokens(special_tokens)
+
+
+    # Add extra_id tokens (sentinel tokens)
+    num_extra_ids = 100  # T5 typically uses 100 sentinel tokens
+    src_tokenizer.add_special_tokens({'additional_special_tokens': [f'<extra_id_{i}>' for i in range(num_extra_ids)]})
+    tgt_tokenizer.add_special_tokens({'additional_special_tokens': [f'<extra_id_{i}>' for i in range(num_extra_ids)]})
+
     print(f"Tokenizers built")
 
     # save tkizers
