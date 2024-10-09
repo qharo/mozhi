@@ -1,6 +1,6 @@
 import torch
 from tracking import WandbTrainer
-from dataset import build_tkizers, download_dataset, tkize_dataset, build_tkizers, split_iterable_dataset, debug_dataset
+from dataset import build_tkizers, get_dataset, tkize_dataset, build_tkizers, split_dataset
 from config import config
 import wandb
 from model import create_model
@@ -9,21 +9,21 @@ from transformers import TrainingArguments
 
 def main():
     # get dataset
-    dataset = download_dataset()
+    dataset = get_dataset()
 
     # get tokenizer from source and target vocabularies
     src_tkizer, tgt_tkizer = build_tkizers(dataset)
 
     # Apply the tokenization to the dataset
     tkized_dataset = tkize_dataset(dataset, src_tkizer, tgt_tkizer)
-    debug_dataset(tkized_dataset)
 
     # split data and get corresponding dataloaders
-    dataset_splits = split_iterable_dataset(tkized_dataset)
+    dataset_splits = split_dataset(tkized_dataset)
     train_dataset = dataset_splits['train']
     test_dataset = dataset_splits['test']
 
-    model = create_model(src_tkizer.pad_token_id)
+    config.pad_token_id = src_tkizer.pad_token_id
+    model = create_model()
 
     if config.use_wandb:
         wandb.init(project=config.wandb_project, entity=config.wandb_entity)
@@ -35,7 +35,7 @@ def main():
         num_train_epochs=config.num_train_epochs,
         per_device_train_batch_size=config.batch_size,
         per_device_eval_batch_size=config.batch_size,
-        learning_rate=config.learning_rate, 
+        learning_rate=config.learning_rate,
         max_steps = config.n_steps,
         weight_decay=0.01,
         eval_strategy="steps",
@@ -55,11 +55,11 @@ def main():
         tgt_tokenizer=tgt_tkizer,
     )
 
-
+    # using accelerate
     accelerator = Accelerator()
     trainer = accelerator.prepare(trainer)
     trainer.train()
-        
+
 
 if __name__ == '__main__':
     main()
