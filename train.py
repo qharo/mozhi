@@ -24,6 +24,7 @@ def main():
 
     config.pad_token_id = src_tkizer.pad_token_id
     model = create_model()
+    print(f"{config.model_name} created")
 
     if config.use_wandb:
         wandb.init(project=config.wandb_project, entity=config.wandb_entity)
@@ -43,6 +44,7 @@ def main():
         save_strategy="steps",
         save_steps=1000,
         load_best_model_at_end=True,
+        run_name="t5_small_normal",
         report_to="wandb" if config.use_wandb else None,
     )
 

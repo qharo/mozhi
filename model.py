@@ -1,3 +1,4 @@
+import torch
 from transformers import AutoConfig, AutoModelForSeq2SeqLM, T5ForConditionalGeneration, T5Config
 import torch.nn as nn
 from config import config
@@ -27,6 +28,18 @@ def create_model():
     # Resize the output layer to match target vocabulary size
     model.lm_head = nn.Linear(config.d_model, config.tgt_vocab_size, bias=False)
 
+    # Initialize weights randomly
+    def init_weights(m):
+        if isinstance(m, nn.Linear):
+            torch.nn.init.xavier_uniform_(m.weight)
+            if m.bias is not None:
+                torch.nn.init.zeros_(m.bias)
+        elif isinstance(m, nn.Embedding):
+            torch.nn.init.xavier_uniform_(m.weight)
+
+    model.apply(init_weights)
+
+    print(sum(p.numel() for p in model.parameters() if p.requires_grad))
     # if training for bitnet
     # if config.use_bit_linear:
     #     replace_linear_layers(model)
