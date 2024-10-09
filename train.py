@@ -23,60 +23,43 @@ def main():
     train_dataset = dataset_splits['train']
     test_dataset = dataset_splits['test']
 
-    model = create_model()
+    model = create_model(src_tkizer.pad_token_id)
 
     if config.use_wandb:
         wandb.init(project=config.wandb_project, entity=config.wandb_entity)
         wandb.config.update(config)
 
-
-
+    # training arguments
     training_args = TrainingArguments(
         output_dir=config.output_dir,
         num_train_epochs=config.num_train_epochs,
         per_device_train_batch_size=config.batch_size,
         per_device_eval_batch_size=config.batch_size,
-        learning_rate=config.learning_rate,
+        learning_rate=config.learning_rate, 
+        max_steps = config.n_steps,
         weight_decay=0.01,
         eval_strategy="steps",
         eval_steps=1000,
         save_strategy="steps",
         save_steps=1000,
-        max_steps = config.n_steps,
         load_best_model_at_end=True,
         report_to="wandb" if config.use_wandb else None,
     )
 
+    # allows tracking with wandb
     trainer = WandbTrainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=test_dataset,
-        tgt_tokenizer=tgt_tkizer
+        tgt_tokenizer=tgt_tkizer,
     )
-
-
-
-    # Debugging: Check the first batch
-    for batch in trainer.get_train_dataloader():
-        print(f"Dataloader output shapes: {', '.join(f'{k}: {v.shape}' for k, v in batch.items())}")
-        break
-    
-    # Debugging: Check model input
-    model = trainer.model
-    model.eval()
-    with torch.no_grad():
-        outputs = model(**batch)
-        print(f"Model output keys: {outputs.keys()}")
-        print(f"Loss: {outputs.loss}")
-
-
-
 
 
     accelerator = Accelerator()
     trainer = accelerator.prepare(trainer)
     trainer.train()
+        
 
 if __name__ == '__main__':
     main()

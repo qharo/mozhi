@@ -10,8 +10,8 @@ class DualTokenizerT5(T5ForConditionalGeneration):
         self.encoder.embed_tokens = nn.Embedding(config.src_vocab_size, config.d_model)
         self.decoder.embed_tokens = nn.Embedding(config.tgt_vocab_size, config.d_model)
 
-
-def create_model():
+# creates model
+def create_model(pad_token_id):
     model_config = T5Config(
         vocab_size=max(config.src_vocab_size, config.tgt_vocab_size),  # Set to max for compatibility
         d_model=config.d_model,
@@ -20,6 +20,7 @@ def create_model():
         num_layers=config.num_layers,
         num_heads=config.num_heads,
         max_position_embeddings=config.max_length,
+        decoder_start_token_id=pad_token_id
     ) 
     model = DualTokenizerT5(model_config)
 
@@ -31,16 +32,6 @@ def create_model():
         replace_linear_layers(model)
 
     return model
-
-class CustomLinear(nn.Module):
-    def __init__(self, in_features, out_features, bias=True):
-        super().__init__()
-        self.linear = nn.Linear(in_features, out_features, bias=bias)
-        self.in_features = in_features
-        self.out_features = out_features
-
-    def forward(self, x):
-        return self.linear(x) + 0.1  # Adding a small constant to make it distinguishable
 
 
 def replace_linear_layers(model):
