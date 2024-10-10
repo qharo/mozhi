@@ -1,9 +1,64 @@
 import torch
-from transformers import AutoConfig, AutoModelForSeq2SeqLM, T5ForConditionalGeneration, T5Config
+from transformers import AutoConfig, AutoModelForSeq2SeqLM, T5ForConditionalGeneration, T5Config, AutoTokenizer
 import torch.nn as nn
 from config import config
 import bitsandbytes as bnb
+from datasets import IterableDataset
 import xformers.ops as xops
+import os
+
+
+
+# => T5Tokenizers
+def build_tkizers(dataset: IterableDataset):
+    # load directly if saved
+    if config.tkizer_save:
+        if os.path.exists(config.src_tkizer_save_path) and os.path.exists(config.tgt_tkizer_save_path):
+            src_tkizer = AutoTokenizer.from_pretrained(config.src_tkizer_save_path, use_fast=True)
+            tgt_tkizer = AutoTokenizer.from_pretrained(config.tgt_tkizer_save_path, use_fast=True)
+            print(f"Tokenizers loaded")
+            return src_tkizer, tgt_tkizer
+
+    # iterator over dataset
+    src_iterator = (item['src'] for item in dataset)
+    tgt_iterator = (item['tgt'] for item in dataset)
+
+    # train tkizer from our datasets
+    pretrained_tkizer = AutoTokenizer.from_pretrained(config.model_name, use_fast=True)
+    src_tkizer = pretrained_tkizer.train_new_from_iterator(src_iterator, vocab_size=config.src_vocab_size)
+    tgt_tkizer = pretrained_tkizer.train_new_from_iterator(tgt_iterator, vocab_size=config.tgt_vocab_size)
+
+    # Ensure all necessary special tokens are present
+    special_tokens = {
+        'eos_token': '</s>',
+        'unk_token': '<unk>',
+        'pad_token': '<pad>',
+    }
+
+    # add special tokens
+    src_tkizer.add_special_tokens(special_tokens)
+    tgt_tkizer.add_special_tokens(special_tokens)
+
+
+    # Add extra_id tokens (sentinel tokens)
+    num_extra_ids = 100  # T5 typically uses 100 sentinel tokens
+    src_tkizer.add_special_tokens({'additional_special_tokens': [f'<extra_id_{i}>' for i in range(num_extra_ids)]})
+    tgt_tkizer.add_special_tokens({'additional_special_tokens': [f'<extra_id_{i}>' for i in range(num_extra_ids)]})
+
+    print(f"Tokenizers built")
+
+    # save tkizers
+    if config.tkizer_save:
+        if not os.path.exists(config.src_tkizer_save_path):
+            os.makedirs(config.src_tkizer_save_path)
+            src_tkizer.save_pretrained(config.src_tkizer_save_path)
+        if not os.path.exists(config.tgt_tkizer_save_path):
+            os.makedirs(config.tgt_tkizer_save_path)
+            tgt_tkizer.save_pretrained(config.tgt_tkizer_save_path)
+        print(f"Tokenizer saved")
+
+    return src_tkizer, tgt_tkizer
+
 
 # src/tgt tkizer child of t5
 class DualTokenizerT5(T5ForConditionalGeneration):

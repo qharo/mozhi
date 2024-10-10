@@ -1,11 +1,68 @@
 from tqdm import tqdm
 import os
 from typing import Dict
-from datasets import load_dataset, load_from_disk, IterableDataset
+from datasets import load_dataset, load_from_disk, IterableDataset, Dataset
 from torch.utils.data import DataLoader
 from transformers import MarianTokenizer, AutoTokenizer
 from config import config
 import random
+
+from concurrent.futures import ProcessPoolExecutor
+
+# def tokenize(example, src_tkizer, tgt_tkizer):
+#         src_text = example['src']
+#         tgt_text = example['tgt']
+
+#         src_tokens = src_tkizer(src_text, max_length=self.max_length, truncation=True, padding='max_length')
+#         tgt_tokens = tgt_tkizer(tgt_text, max_length=self.max_length, truncation=True, padding='max_length')
+        
+#         return {
+#             'input_ids': src_tokens['input_ids'],
+#             'attention_mask': src_tokens['attention_mask'],
+#             'labels': tgt_tokens['input_ids'],
+#         }
+
+
+# class TokenizedDataset(Dataset):
+#     def __init__(self, i_dataset: IterableDataset, src_tokenizer, tgt_tokenizer, max_length: int = config.max_length):
+#         self._data = []
+#         self.src_tokenizer = src_tokenizer
+#         self.tgt_tokenizer = tgt_tokenizer
+#         self.max_length = max_length
+
+#         buffer = []
+#         for string_sample in tqdm(i_dataset, desc="Creating tokenized dataset"):
+#             buffer.append(string_sample)
+
+#             if
+
+
+#             tkized_sample = self.tokenize_sample(string_sample)
+#             self._data.append(tkized_sample)
+
+#     def tokenize_sample(self, item):
+#         src_text = item['src']
+#         tgt_text = item['tgt']
+
+#         src_tokens = self.src_tokenizer(src_text, max_length=self.max_length, truncation=True, padding='max_length')
+#         tgt_tokens = self.tgt_tokenizer(tgt_text, max_length=self.max_length, truncation=True, padding='max_length')
+        
+#         return {
+#             'input_ids': src_tokens['input_ids'],
+#             'attention_mask': src_tokens['attention_mask'],
+#             'labels': tgt_tokens['input_ids'],
+#         }
+
+#     def __len__(self):
+#         return len(self.data)
+
+#     def __getitem__(self, idx):
+#         return self.data[idx]
+
+#     def save_to_disk(self, path):
+#         dataset = datasets.Dataset.from_dict({k: [d[k] for d in self.data] for k in self.data[0]})
+#         dataset.save_to_disk(path)
+
 
 # => IterableDataset (tokenized)
 def tkize_dataset(dataset, src_tkizer, tgt_tkizer) -> IterableDataset:
@@ -30,10 +87,10 @@ def tkize_dataset(dataset, src_tkizer, tgt_tkizer) -> IterableDataset:
             "labels": tgt_tkized["input_ids"].squeeze(0)
         }
 
-    return IterableDataset.from_generator(lambda: map(tkize_sample, dataset))
+    return IterableDataset.from_generator(lambda: map(tkize_sample, dataset)).batch(config.batch_size)
 
 # => IterableDataset
-def get_dataset() -> IterableDataset:
+def get_iterable_dataset() -> IterableDataset:
     dataset = load_dataset(
         "ai4bharat/samanantar",
         f"{config.target_lang}",
@@ -64,52 +121,3 @@ def split_dataset(dataset: IterableDataset, train_size=0.7, val_size=0.15, test_
         "test": IterableDataset.from_generator(lambda: create_subset("test"))
     }
 
-# => T5Tokenizers
-def build_tkizers(dataset: IterableDataset):
-    # load directly if saved
-    if config.tkizer_save:
-        if os.path.exists(config.src_tkizer_save_path) and os.path.exists(config.tgt_tkizer_save_path):
-            src_tkizer = AutoTokenizer.from_pretrained(config.src_tkizer_save_path, use_fast=True)
-            tgt_tkizer = AutoTokenizer.from_pretrained(config.tgt_tkizer_save_path, use_fast=True)
-            print(f"Tokenizers loaded")
-            return src_tkizer, tgt_tkizer
-
-    # iterator over dataset
-    src_iterator = (item['src'] for item in dataset)
-    tgt_iterator = (item['tgt'] for item in dataset)
-
-    # train tkizer from our datasets
-    pretrained_tkizer = AutoTokenizer.from_pretrained(config.model_name, use_fast=True)
-    src_tkizer = pretrained_tkizer.train_new_from_iterator(src_iterator, vocab_size=config.src_vocab_size)
-    tgt_tkizer = pretrained_tkizer.train_new_from_iterator(tgt_iterator, vocab_size=config.tgt_vocab_size)
-
-    # Ensure all necessary special tokens are present
-    special_tokens = {
-        'eos_token': '</s>',
-        'unk_token': '<unk>',
-        'pad_token': '<pad>',
-    }
-
-    # add special tokens
-    src_tkizer.add_special_tokens(special_tokens)
-    tgt_tkizer.add_special_tokens(special_tokens)
-
-
-    # Add extra_id tokens (sentinel tokens)
-    num_extra_ids = 100  # T5 typically uses 100 sentinel tokens
-    src_tkizer.add_special_tokens({'additional_special_tokens': [f'<extra_id_{i}>' for i in range(num_extra_ids)]})
-    tgt_tkizer.add_special_tokens({'additional_special_tokens': [f'<extra_id_{i}>' for i in range(num_extra_ids)]})
-
-    print(f"Tokenizers built")
-
-    # save tkizers
-    if config.tkizer_save:
-        if not os.path.exists(config.src_tkizer_save_path):
-            os.makedirs(config.src_tkizer_save_path)
-            src_tkizer.save_pretrained(config.src_tkizer_save_path)
-        if not os.path.exists(config.tgt_tkizer_save_path):
-            os.makedirs(config.tgt_tkizer_save_path)
-            tgt_tkizer.save_pretrained(config.tgt_tkizer_save_path)
-        print(f"Tokenizer saved")
-
-    return src_tkizer, tgt_tkizer

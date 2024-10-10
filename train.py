@@ -1,6 +1,7 @@
 import torch
 from tracking import WandbTrainer
-from dataset import build_tkizers, get_dataset, tkize_dataset, build_tkizers, split_dataset
+from dataset import get_iterable_dataset, tkize_dataset, split_dataset
+from model import build_tkizers
 from config import config
 import wandb
 from model import create_model
@@ -9,10 +10,12 @@ from transformers import TrainingArguments
 
 def main():
     # get dataset
-    dataset = get_dataset()
+    dataset = get_iterable_dataset()
 
     # get tokenizer from source and target vocabularies
     src_tkizer, tgt_tkizer = build_tkizers(dataset)
+
+    # print(TokenizedDataset(i_dataset, src_tkizer, tgt_tkizer))
 
     # Apply the tokenization to the dataset
     tkized_dataset = tkize_dataset(dataset, src_tkizer, tgt_tkizer)
