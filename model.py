@@ -2,6 +2,8 @@ import torch
 from transformers import AutoConfig, AutoModelForSeq2SeqLM, T5ForConditionalGeneration, T5Config
 import torch.nn as nn
 from config import config
+import bitsandbytes as bnb
+import xformers.ops as xops
 
 # src/tgt tkizer child of t5
 class DualTokenizerT5(T5ForConditionalGeneration):
@@ -10,6 +12,16 @@ class DualTokenizerT5(T5ForConditionalGeneration):
         self.shared = None
         self.encoder.embed_tokens = nn.Embedding(config.src_vocab_size, config.d_model)
         self.decoder.embed_tokens = nn.Embedding(config.tgt_vocab_size, config.d_model)
+        self.gradient_checkpointing_enable()
+        self.enable_xformers()
+
+    def enable_xformers(self):
+        for layer in self.encoder.block + self.decoder.block:
+            layer.layer[0].SelfAttention.process_mask = xops.memory_efficient_attention
+            if hasattr(layer.layer[-1], 'EncDecAttention'):
+                layer.layer[-1].EncDecAttention.process_mask = xops.memory_efficient_attention
+
+
 
 # creates model
 def create_model():
@@ -38,6 +50,16 @@ def create_model():
             torch.nn.init.xavier_uniform_(m.weight)
 
     model.apply(init_weights)
+
+    for name, module in list(model.named_modules()):  # Create a list to avoid mutation during iteration
+        if isinstance(module, nn.Linear):
+            parent_name, child_name = name.rsplit('.', 1) if '.' in name else ('', name)
+            parent = model if parent_name == '' else model.get_submodule(parent_name)
+            setattr(parent, child_name, bnb.nn.Linear8bitLt(
+                module.in_features, 
+                module.out_features, 
+                bias=module.bias is not None
+            ))
 
     print(sum(p.numel() for p in model.parameters() if p.requires_grad))
     # if training for bitnet

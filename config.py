@@ -26,7 +26,7 @@ class Config:
     max_length: int = 512
 
     # model training
-    batch_size: int = 32
+    batch_size: int = 16
     learning_rate: float = 5e-5
     num_train_epochs: int = 3
     output_dir: str = "data/training"
