@@ -5,7 +5,7 @@ class Config:
     # dataset config
     data_save: bool = True
     data_save_path: str = 'data/dataset'
-    n_samples = 5264867
+    n_samples = 100000
 
     # tkizer config
     tkizer_save: bool = True
@@ -19,14 +19,14 @@ class Config:
     # model arch
     model_name: str = "google-t5/t5-base"
     use_bit_linear: bool = False
-    d_model: int = 768
-    num_layers: int = 12
-    num_heads: int = 12
-    d_ff: int = 3072
+    d_model: int = 512
+    num_layers: int = 6
+    num_heads: int = 8
+    d_ff: int = 2048
     max_length: int = 512
 
     # model training
-    batch_size: int = 16
+    batch_size: int = 32
     learning_rate: float = 5e-5
     num_train_epochs: int = 3
     output_dir: str = "data/training"
