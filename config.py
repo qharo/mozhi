@@ -5,7 +5,7 @@ class Config:
     # dataset config
     data_save: bool = True
     data_save_path: str = 'data/dataset'
-    n_samples = 100000
+    n_samples = 5000000
 
     # tkizer config
     tkizer_save: bool = True

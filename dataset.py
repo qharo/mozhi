@@ -1,67 +1,34 @@
 from tqdm import tqdm
 import os
+import torch
+import math
 from typing import Dict
 from datasets import load_dataset, load_from_disk, IterableDataset, Dataset
 from torch.utils.data import DataLoader
 from transformers import MarianTokenizer, AutoTokenizer
 from config import config
 import random
+import itertools
 
-from concurrent.futures import ProcessPoolExecutor
+from accelerate import Accelerator
 
-# def tokenize(example, src_tkizer, tgt_tkizer):
-#         src_text = example['src']
-#         tgt_text = example['tgt']
+class MultiGPUIterableDataset(IterableDataset):
+    def __init__(self, dataset, accelerator: Accelerator):
+        self.dataset = dataset
+        self.accelerator = accelerator
 
-#         src_tokens = src_tkizer(src_text, max_length=self.max_length, truncation=True, padding='max_length')
-#         tgt_tokens = tgt_tkizer(tgt_text, max_length=self.max_length, truncation=True, padding='max_length')
-        
-#         return {
-#             'input_ids': src_tokens['input_ids'],
-#             'attention_mask': src_tokens['attention_mask'],
-#             'labels': tgt_tokens['input_ids'],
-#         }
+    def __iter__(self):
+        worker_info = torch.utils.data.get_worker_info()
+        if worker_info is None:
+            iter_start = self.accelerator.process_index
+            iter_end = None
+        else:
+            per_worker = int(math.ceil(len(self.dataset) / float(worker_info.num_workers)))
+            worker_id = worker_info.id
+            iter_start = worker_id * per_worker
+            iter_end = min(iter_start + per_worker, len(self.dataset))
 
-
-# class TokenizedDataset(Dataset):
-#     def __init__(self, i_dataset: IterableDataset, src_tokenizer, tgt_tokenizer, max_length: int = config.max_length):
-#         self._data = []
-#         self.src_tokenizer = src_tokenizer
-#         self.tgt_tokenizer = tgt_tokenizer
-#         self.max_length = max_length
-
-#         buffer = []
-#         for string_sample in tqdm(i_dataset, desc="Creating tokenized dataset"):
-#             buffer.append(string_sample)
-
-#             if
-
-
-#             tkized_sample = self.tokenize_sample(string_sample)
-#             self._data.append(tkized_sample)
-
-#     def tokenize_sample(self, item):
-#         src_text = item['src']
-#         tgt_text = item['tgt']
-
-#         src_tokens = self.src_tokenizer(src_text, max_length=self.max_length, truncation=True, padding='max_length')
-#         tgt_tokens = self.tgt_tokenizer(tgt_text, max_length=self.max_length, truncation=True, padding='max_length')
-        
-#         return {
-#             'input_ids': src_tokens['input_ids'],
-#             'attention_mask': src_tokens['attention_mask'],
-#             'labels': tgt_tokens['input_ids'],
-#         }
-
-#     def __len__(self):
-#         return len(self.data)
-
-#     def __getitem__(self, idx):
-#         return self.data[idx]
-
-#     def save_to_disk(self, path):
-#         dataset = datasets.Dataset.from_dict({k: [d[k] for d in self.data] for k in self.data[0]})
-#         dataset.save_to_disk(path)
+        return iter(itertools.islice(self.dataset, iter_start, iter_end))
 
 
 # => IterableDataset (tokenized)
@@ -87,7 +54,7 @@ def tkize_dataset(dataset, src_tkizer, tgt_tkizer) -> IterableDataset:
             "labels": tgt_tkized["input_ids"].squeeze(0)
         }
 
-    return IterableDataset.from_generator(lambda: map(tkize_sample, dataset)).batch(config.batch_size)
+    return IterableDataset.from_generator(lambda: map(tkize_sample, dataset))
 
 # => IterableDataset
 def get_iterable_dataset() -> IterableDataset:

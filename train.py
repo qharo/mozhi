@@ -1,14 +1,18 @@
 import torch
 from tracking import WandbTrainer
-from dataset import get_iterable_dataset, tkize_dataset, split_dataset
+from dataset import get_iterable_dataset, tkize_dataset, split_dataset, MultiGPUIterableDataset
 from model import build_tkizers
 from config import config
 import wandb
 from model import create_model
 from accelerate import Accelerator
-from transformers import TrainingArguments
+from transformers import TrainingArguments, Trainer
 
 def main():
+
+    # using accelerate
+    accelerator = Accelerator()
+
     # get dataset
     dataset = get_iterable_dataset()
 
@@ -18,10 +22,12 @@ def main():
     # print(TokenizedDataset(i_dataset, src_tkizer, tgt_tkizer))
 
     # Apply the tokenization to the dataset
-    tkized_dataset = tkize_dataset(dataset, src_tkizer, tgt_tkizer)
+    tkized_dataset = tkize_dataset(dataset, src_tkizer, tgt_tkizer)    
+    multi_gpu_dataset = MultiGPUIterableDataset(tkized_dataset, accelerator)
+    
 
     # split data and get corresponding dataloaders
-    dataset_splits = split_dataset(tkized_dataset)
+    dataset_splits = split_dataset(multi_gpu_dataset)
     train_dataset = dataset_splits['train']
     test_dataset = dataset_splits['test']
 
@@ -54,16 +60,14 @@ def main():
     )
 
     # allows tracking with wandb
-    trainer = WandbTrainer(
+    trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=test_dataset,
-        tgt_tokenizer=tgt_tkizer,
+        tokenizer=tgt_tkizer,
     )
 
-    # using accelerate
-    accelerator = Accelerator()
     trainer = accelerator.prepare(trainer)
     trainer.train()
 

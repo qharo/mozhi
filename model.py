@@ -67,7 +67,7 @@ class DualTokenizerT5(T5ForConditionalGeneration):
         self.shared = None
         self.encoder.embed_tokens = nn.Embedding(config.src_vocab_size, config.d_model)
         self.decoder.embed_tokens = nn.Embedding(config.tgt_vocab_size, config.d_model)
-        self.gradient_checkpointing_enable()
+        # self.gradient_checkpointing_enable()
         self.enable_xformers()
 
     def enable_xformers(self):
@@ -88,7 +88,8 @@ def create_model():
         num_layers=config.num_layers,
         num_heads=config.num_heads,
         max_position_embeddings=config.max_length,
-        decoder_start_token_id=config.pad_token_id
+        decoder_start_token_id=config.pad_token_id,
+        # use_cache=False,
     )
     model = DualTokenizerT5(model_config)
 
@@ -106,15 +107,15 @@ def create_model():
 
     model.apply(init_weights)
 
-    for name, module in list(model.named_modules()):  # Create a list to avoid mutation during iteration
-        if isinstance(module, nn.Linear):
-            parent_name, child_name = name.rsplit('.', 1) if '.' in name else ('', name)
-            parent = model if parent_name == '' else model.get_submodule(parent_name)
-            setattr(parent, child_name, bnb.nn.Linear8bitLt(
-                module.in_features, 
-                module.out_features, 
-                bias=module.bias is not None
-            ))
+    # for name, module in list(model.named_modules()):  # Create a list to avoid mutation during iteration
+    #     if isinstance(module, nn.Linear):
+    #         parent_name, child_name = name.rsplit('.', 1) if '.' in name else ('', name)
+    #         parent = model if parent_name == '' else model.get_submodule(parent_name)
+    #         setattr(parent, child_name, bnb.nn.Linear8bitLt(
+    #             module.in_features, 
+    #             module.out_features, 
+    #             bias=module.bias is not None
+    #         ))
 
     print(sum(p.numel() for p in model.parameters() if p.requires_grad))
     # if training for bitnet
