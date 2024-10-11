@@ -1,6 +1,7 @@
 accelerate==1.0.0
 bitsandbytes==0.44.1
 datasets==3.0.1
+deepspeed==0.15.20
 evaluate==0.4.3
 GPUtil==1.4.0
 numpy==2.1.2
@@ -10,6 +11,8 @@ sacrebleu==2.4.3
 tokenizers==0.20.0
 torch==2.4.1
 tqdm==4.66.5
+transformer_engine==1.11.0
+transformer_engine_cu12==1.11.0
 transformers==4.45.2
 wandb==0.18.3
 xformers==0.0.28.post1

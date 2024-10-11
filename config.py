@@ -1,7 +1,10 @@
 from dataclasses import dataclass
+import torch
 
 @dataclass
 class Config:
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     # dataset config
     data_save: bool = True
     data_save_path: str = 'data/dataset'
@@ -22,8 +25,8 @@ class Config:
     d_model: int = 512
     num_layers: int = 6
     num_heads: int = 8
-    d_ff: int = 2048
-    max_length: int = 512
+    d_ff: int = 1024
+    max_length: int = 256
 
     # model training
     batch_size: int = 32
