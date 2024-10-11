@@ -5,10 +5,11 @@ from config import config
 from datasets import IterableDataset
 import xformers.ops as xops
 import os
+import pandas as pd
 
 # dataset = => Tuple(src_tkizer, tgt_tkizer : T5Tokenizer)
-def build_tkizers(dataset: IterableDataset):
-    # load directly if saved
+def build_tkizers(df_path: str):
+
     if config.tkizer_save:
         if os.path.exists(config.src_tkizer_save_path) and os.path.exists(config.tgt_tkizer_save_path):
             src_tkizer = AutoTokenizer.from_pretrained(config.src_tkizer_save_path, use_fast=True)
@@ -17,14 +18,13 @@ def build_tkizers(dataset: IterableDataset):
             config.pad_token_id = src_tkizer.pad_token_id
             return src_tkizer, tgt_tkizer
 
-    # iterator over dataset
-    src_iterator = (item['src'] for item in dataset)
-    tgt_iterator = (item['tgt'] for item in dataset)
+    df = pd.read_csv(df_path)
+    iterator = lambda x: df[x].tolist()
 
     # train tkizer from our datasets
     pretrained_tkizer = AutoTokenizer.from_pretrained(config.model_name, use_fast=True)
-    src_tkizer = pretrained_tkizer.train_new_from_iterator(src_iterator, vocab_size=config.src_vocab_size)
-    tgt_tkizer = pretrained_tkizer.train_new_from_iterator(tgt_iterator, vocab_size=config.tgt_vocab_size)
+    src_tkizer = pretrained_tkizer.train_new_from_iterator(iterator('src'), vocab_size=config.src_vocab_size)
+    tgt_tkizer = pretrained_tkizer.train_new_from_iterator(iterator('tgt'), vocab_size=config.tgt_vocab_size)
 
     # Ensure all necessary special tokens are present
     special_tokens = {
@@ -43,7 +43,6 @@ def build_tkizers(dataset: IterableDataset):
     src_tkizer.add_special_tokens({'additional_special_tokens': [f'<extra_id_{i}>' for i in range(num_extra_ids)]})
     tgt_tkizer.add_special_tokens({'additional_special_tokens': [f'<extra_id_{i}>' for i in range(num_extra_ids)]})
 
-    print(f"Tokenizers built")
 
     # save tkizers
     if config.tkizer_save:
@@ -54,6 +53,7 @@ def build_tkizers(dataset: IterableDataset):
             os.makedirs(config.tgt_tkizer_save_path)
             tgt_tkizer.save_pretrained(config.tgt_tkizer_save_path)
         print(f"Tokenizer saved")
+
 
     return src_tkizer, tgt_tkizer
 
