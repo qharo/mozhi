@@ -1,6 +1,5 @@
 import torch
-from tracking import WandbTrainer
-from dataset import get_iterable_dataset, tkize_dataset, split_dataset, DataLoader
+from dataset import get_dataset, tkize_dataset, get_split_loaders
 from model import build_tkizers
 from config import config
 import wandb
@@ -10,37 +9,23 @@ from transformers import TrainingArguments, Trainer, get_scheduler
 from tqdm import tqdm
 
 def main():
-
-    # using accelerate
+    # setup accelerate
     accelerator = Accelerator()
 
-    # get dataset
-    dataset = get_iterable_dataset()
-
-    # get tokenizer from source and target vocabularies
-    src_tkizer, tgt_tkizer = build_tkizers(dataset)
-
-    # print(TokenizedDataset(i_dataset, src_tkizer, tgt_tkizer))
-
-    # Apply the tokenization to the dataset
-    tkized_dataset = tkize_dataset(dataset, src_tkizer, tgt_tkizer)    
-    # multi_gpu_dataset = MultiGPUIterableDataset(tkized_dataset, accelerator)
-    
-
-    # split data and get corresponding dataloaders
-    dataset_splits = split_dataset(tkized_dataset)
-    train_dataset = dataset_splits['train']
-    test_dataset = dataset_splits['val']
-
-
-    # Create DataLoaders
-    train_dataloader = DataLoader(train_dataset, batch_size=config.batch_size, num_workers=1, prefetch_factor=2)
-    eval_dataloader = DataLoader(test_dataset, batch_size=config.batch_size, num_workers=1, prefetch_factor=2)
-
-
+    # ====== LOAD DATA, TKIZER AND MODEL======= #
+    dataset = get_dataset()
+    src_tkizer, tgt_tkizer = build_tkizers(dataset)   # build tkizer from src/tgt vocabs
+    tkized_dataset = tkize_dataset(dataset, src_tkizer, tgt_tkizer) # tkized data
+    train_dataloader, eval_dataloader, test_dataloader = get_split_loaders(
+            tkized_dataset,
+            train_size=0.8,
+            val_size=0.01,
+            test_size=0.19,
+    )
     config.pad_token_id = src_tkizer.pad_token_id
     model = create_model()
     model.to(config.device)
+    # ======================== #
 
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, weight_decay=0.01)
@@ -53,8 +38,6 @@ def main():
     if config.use_wandb:
         wandb.init(project=config.wandb_project, entity=config.wandb_entity)
         wandb.config.update(config)
-
-
     
     lr_scheduler = get_scheduler(
         "linear",
@@ -63,8 +46,8 @@ def main():
         num_training_steps=config.n_steps
     )
 
-    if config.use_wandb:
-        wandb.init(project="t5_small_normal", config=config)
+    # if config.use_wandb:
+    #     wandb.init(project="t5_small_normal", config=config)
 
     best_eval_loss = float('inf')
     
@@ -109,6 +92,16 @@ def main():
     if config.use_wandb:
         wandb.finish()
 
+
+    # Final test evaluation
+    model.eval()
+    test_loss = 0
+    for test_batch in test_dataloader:
+        with torch.no_grad():
+            test_outputs = model(**test_batch)
+            test_loss += test_outputs.loss.item()
+    test_loss /= len(test_dataloader)
+    print(f"Final Test Loss: {test_loss:.4f}")
 
 
 if __name__ == '__main__':

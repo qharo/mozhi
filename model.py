@@ -1,15 +1,12 @@
 import torch
-from transformers import AutoConfig, AutoModelForSeq2SeqLM, T5ForConditionalGeneration, T5Config, AutoTokenizer
+from transformers import T5ForConditionalGeneration, T5Config, AutoTokenizer
 import torch.nn as nn
 from config import config
-import bitsandbytes as bnb
 from datasets import IterableDataset
 import xformers.ops as xops
 import os
 
-
-
-# => T5Tokenizers
+# dataset = => Tuple(src_tkizer, tgt_tkizer : T5Tokenizer)
 def build_tkizers(dataset: IterableDataset):
     # load directly if saved
     if config.tkizer_save:
@@ -38,7 +35,7 @@ def build_tkizers(dataset: IterableDataset):
     # add special tokens
     src_tkizer.add_special_tokens(special_tokens)
     tgt_tkizer.add_special_tokens(special_tokens)
-
+    # config.pad_token_id = src_tkizer.pad_token_id
 
     # Add extra_id tokens (sentinel tokens)
     num_extra_ids = 100  # T5 typically uses 100 sentinel tokens
@@ -76,8 +73,6 @@ class DualTokenizerT5(T5ForConditionalGeneration):
             if hasattr(layer.layer[-1], 'EncDecAttention'):
                 layer.layer[-1].EncDecAttention.process_mask = xops.memory_efficient_attention
 
-
-
 # creates model
 def create_model():
     model_config = T5Config(
@@ -107,16 +102,6 @@ def create_model():
 
     model.apply(init_weights)
 
-    # for name, module in list(model.named_modules()):  # Create a list to avoid mutation during iteration
-    #     if isinstance(module, nn.Linear):
-    #         parent_name, child_name = name.rsplit('.', 1) if '.' in name else ('', name)
-    #         parent = model if parent_name == '' else model.get_submodule(parent_name)
-    #         setattr(parent, child_name, bnb.nn.Linear8bitLt(
-    #             module.in_features, 
-    #             module.out_features, 
-    #             bias=module.bias is not None
-    #         ))
-
     print(sum(p.numel() for p in model.parameters() if p.requires_grad))
     # if training for bitnet
     # if config.use_bit_linear:
@@ -136,3 +121,13 @@ def create_model():
 #             setattr(parent, child_name, custom_linear)
 #             replacement_count += 1
 #     print(f"Replaced {replacement_count} nn.Linear layers with CustomLinear")
+
+   # for name, module in list(model.named_modules()):  # Create a list to avoid mutation during iteration
+    #     if isinstance(module, nn.Linear):
+    #         parent_name, child_name = name.rsplit('.', 1) if '.' in name else ('', name)
+    #         parent = model if parent_name == '' else model.get_submodule(parent_name)
+    #         setattr(parent, child_name, bnb.nn.Linear8bitLt(
+    #             module.in_features, 
+    #             module.out_features, 
+    #             bias=module.bias is not None
+    #         ))

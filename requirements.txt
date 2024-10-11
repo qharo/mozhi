@@ -1,7 +1,6 @@
 accelerate==1.0.0
-bitsandbytes==0.44.1
 datasets==3.0.1
-deepspeed==0.15.20
+deepspeed==0.15.2
 evaluate==0.4.3
 GPUtil==1.4.0
 numpy==2.1.2
