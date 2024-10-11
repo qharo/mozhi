@@ -9,6 +9,9 @@ class Config:
     data_save: bool = True
     data_save_path: str = 'data/dataset'
     n_samples = 5000000
+    train_split = 0.8
+    val_split = 0.001
+    test_split = 1 - (train_split + val_split)
 
     # tkizer config
     tkizer_save: bool = True
@@ -33,7 +36,8 @@ class Config:
     learning_rate: float = 5e-5
     num_train_epochs: int = 3
     output_dir: str = "data/training"
-    n_steps = (n_samples * num_train_epochs) // batch_size
+    n_steps = (n_samples * num_train_epochs * train_split) // batch_size
+    n_steps_per_epoch = (n_samples * train_split) // batch_size
 
     # W&B settings
     use_wandb: bool = False

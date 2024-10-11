@@ -14,6 +14,7 @@ def build_tkizers(dataset: IterableDataset):
             src_tkizer = AutoTokenizer.from_pretrained(config.src_tkizer_save_path, use_fast=True)
             tgt_tkizer = AutoTokenizer.from_pretrained(config.tgt_tkizer_save_path, use_fast=True)
             print(f"Tokenizers loaded")
+            config.pad_token_id = src_tkizer.pad_token_id
             return src_tkizer, tgt_tkizer
 
     # iterator over dataset
@@ -35,7 +36,7 @@ def build_tkizers(dataset: IterableDataset):
     # add special tokens
     src_tkizer.add_special_tokens(special_tokens)
     tgt_tkizer.add_special_tokens(special_tokens)
-    # config.pad_token_id = src_tkizer.pad_token_id
+    config.pad_token_id = src_tkizer.pad_token_id
 
     # Add extra_id tokens (sentinel tokens)
     num_extra_ids = 100  # T5 typically uses 100 sentinel tokens

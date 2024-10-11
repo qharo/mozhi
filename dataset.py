@@ -42,16 +42,10 @@ def get_dataset() -> IterableDataset:
     return dataset
 
 # dataset => split_dataset => split_dataloaders
-def get_split_loaders(dataset: IterableDataset, train_size: float = 0.7, val_size: float = 0.01, 
-                  test_size: float = 0.19, seed: int = 42) -> Dict[str, DataLoader]:
+def get_split_loaders(dataset: IterableDataset, seed: int = 42) -> Dict[str, DataLoader]:
     random.seed(seed)
     
-    splits = {"train": train_size, "val": val_size, "test": test_size}
-    
-    # checks if split proportions add up
-    total = sum(splits.values())
-    if abs(total - 1.0) > 1e-6:
-        raise ValueError(f"Split proportions must sum to 1, got {total}")
+    splits = {"train": config.train_split, "val": config.val_split, "test": config.test_split}
     
     split_names, weights = zip(*splits.items())
     
@@ -75,6 +69,8 @@ def get_split_loaders(dataset: IterableDataset, train_size: float = 0.7, val_siz
             num_workers=1,
             prefetch_factor=2
         )
+
+    print(f"Train: {config.n_samples*config.train_split//config.batch_size}, Val: {config.n_samples*config.val_split//config.batch_size}, Test: {config.n_samples*config.test_split//config.batch_size}")
 
     return (
         create_dataloader("train"),

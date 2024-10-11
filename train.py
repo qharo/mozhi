@@ -8,37 +8,28 @@ from accelerate import Accelerator
 from transformers import TrainingArguments, Trainer, get_scheduler
 from tqdm import tqdm
 
+
+def get_data_model_tkizer():
+    dataset = get_dataset()
+    src_tkizer, tgt_tkizer = build_tkizers(dataset)   # build tkizer from src/tgt vocabs
+    tkized_dataset = tkize_dataset(dataset, src_tkizer, tgt_tkizer) # tkized data
+    dataloaders = get_split_loaders(
+            tkized_dataset,
+    )
+    model = create_model()
+    model.to(config.device)
+    return model, dataloaders
+
 def main():
     # setup accelerate
     accelerator = Accelerator()
 
     # ====== LOAD DATA, TKIZER AND MODEL======= #
-    dataset = get_dataset()
-    src_tkizer, tgt_tkizer = build_tkizers(dataset)   # build tkizer from src/tgt vocabs
-    tkized_dataset = tkize_dataset(dataset, src_tkizer, tgt_tkizer) # tkized data
-    train_dataloader, eval_dataloader, test_dataloader = get_split_loaders(
-            tkized_dataset,
-            train_size=0.8,
-            val_size=0.01,
-            test_size=0.19,
-    )
-    config.pad_token_id = src_tkizer.pad_token_id
-    model = create_model()
-    model.to(config.device)
-    # ======================== #
+    model, dataloaders = get_data_model_tkizer()
+    train_dataloader, val_dataloader, test_dataloader = dataloaders
 
-
+    # ===== TRAINING ======= #
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, weight_decay=0.01)
-
-    # Prepare for mixed precision training
-    model, optimizer, train_dataloader, eval_dataloader = accelerator.prepare(
-        model, optimizer, train_dataloader, eval_dataloader
-    )
-
-    if config.use_wandb:
-        wandb.init(project=config.wandb_project, entity=config.wandb_entity)
-        wandb.config.update(config)
-    
     lr_scheduler = get_scheduler(
         "linear",
         optimizer=optimizer,
@@ -46,51 +37,64 @@ def main():
         num_training_steps=config.n_steps
     )
 
-    # if config.use_wandb:
-    #     wandb.init(project="t5_small_normal", config=config)
+    model, optimizer, train_dataloader, val_dataloader = accelerator.prepare(
+        model, optimizer, train_dataloader, val_dataloader
+    ) # mixed precision training
+
+    if config.use_wandb:
+        wandb.init(project=config.wandb_project, entity=config.wandb_entity)
+        wandb.config.update(config)
 
     best_eval_loss = float('inf')
-    
-    progress_bar = tqdm(range(config.n_steps))
-    accumulation_steps = 4  # Adjust based on your needs
+    accumulation_steps = 4 # Adjust based on your needs
 
-    for step in range(config.n_steps):
+    for epoch in range(config.num_train_epochs):
         model.train()
-        for i, batch in enumerate(train_dataloader):
+        total_loss = 0
+        progress_bar = tqdm(total=config.n_steps_per_epoch, desc=f"Epoch {epoch + 1}/{config.num_train_epochs}")
+        
+        for step, batch in enumerate(train_dataloader):
             with accelerator.autocast():
                 outputs = model(**batch)
                 loss = outputs.loss / accumulation_steps
-
-            accelerator.backward(loss)
             
-            if (i + 1) % accumulation_steps == 0:
+            accelerator.backward(loss)
+            total_loss += loss.item() * accumulation_steps
+            
+            if (step + 1) % accumulation_steps == 0:
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad()
             
             progress_bar.update(1)
+            progress_bar.set_postfix({"Loss": total_loss / (step + 1)})
             
-            if (step + 1) % 1000 == 0:  # Evaluate less frequently
+            if (step + 1) % 100 == 0:  # Evaluate less frequently
                 model.eval()
                 eval_loss = 0
-                for eval_batch in eval_dataloader:
+                for eval_batch in val_dataloader:
                     with torch.no_grad():
                         eval_outputs = model(**eval_batch)
                         eval_loss += eval_outputs.loss.item()
-                eval_loss /= len(eval_dataloader)
+                eval_loss /= len(val_dataloader)
+                print(f"Epoch {epoch + 1}, Step {step + 1}: Eval Loss: {eval_loss:.4f}")
                 
-                print(f"Step {step+1}: Eval Loss: {eval_loss:.4f}")
                 if config.use_wandb:
-                    wandb.log({"eval_loss": eval_loss, "train_loss": loss.item() * accumulation_steps})
+                    wandb.log({
+                        "epoch": epoch + 1,
+                        "step": step + 1,
+                        "eval_loss": eval_loss,
+                        "train_loss": total_loss / (step + 1)
+                    })
                 
                 if eval_loss < best_eval_loss:
                     best_eval_loss = eval_loss
                     accelerator.save(model.state_dict(), f"{config.output_dir}/best_model.pt")
                 
                 model.train()
+        
+        print(f"Epoch {epoch + 1}/{config.num_train_epochs} completed. Average Loss: {total_loss / len(train_dataloader):.4f}")
 
-    if config.use_wandb:
-        wandb.finish()
 
 
     # Final test evaluation
