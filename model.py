@@ -94,41 +94,54 @@ def create_model():
 
     # Initialize weights randomly
     def init_weights(m):
-        if isinstance(m, nn.Linear):
+        if isinstance(m, nn.Linear) or isinstance(m, BitLinear):
             torch.nn.init.xavier_uniform_(m.weight)
-            if m.bias is not None:
-                torch.nn.init.zeros_(m.bias)
         elif isinstance(m, nn.Embedding):
             torch.nn.init.xavier_uniform_(m.weight)
 
+    model = prepare_for_1_58bit_training(model)
     model.apply(init_weights)
 
-    print(sum(p.numel() for p in model.parameters() if p.requires_grad))
-    # if training for bitnet
-    # if config.use_bit_linear:
-    #     replace_linear_layers(model)
+    print(model)
 
     return model
 
+def prepare_for_1_58bit_training(model):
+    for name, module in model.named_children():
+        if isinstance(module, nn.Linear):
+            setattr(model, name, BitLinear(module.in_features, module.out_features))
+        # elif isinstance(module, nn.SwiGLU):
+        #     setattr(model, name, BitLinear(module.in_features, module.out_features))
+        elif isinstance(module, nn.RMSNorm):
+            # Remove RMSNorm layers
+            setattr(model, name, nn.Identity())
+        else:
+            # Recursively apply the function to submodules
+            prepare_for_1_58bit_training(module)
+    
+    return model
 
-# def replace_linear_layers(model):
-#     replacement_count = 0
-#     for name, module in model.named_modules():
-#         if isinstance(module, nn.Linear):
-#             parent_name = '.'.join(name.split('.')[:-1])
-#             child_name = name.split('.')[-1]
-#             parent = model.get_submodule(parent_name)
-#             custom_linear = BitLinear(module.in_features, module.out_features, bias=module.bias is not None)
-#             setattr(parent, child_name, custom_linear)
-#             replacement_count += 1
-#     print(f"Replaced {replacement_count} nn.Linear layers with CustomLinear")
 
-   # for name, module in list(model.named_modules()):  # Create a list to avoid mutation during iteration
-    #     if isinstance(module, nn.Linear):
-    #         parent_name, child_name = name.rsplit('.', 1) if '.' in name else ('', name)
-    #         parent = model if parent_name == '' else model.get_submodule(parent_name)
-    #         setattr(parent, child_name, bnb.nn.Linear8bitLt(
-    #             module.in_features, 
-    #             module.out_features, 
-    #             bias=module.bias is not None
-    #         ))
+def activation_quant(x):
+    scale = 127.0 / x.abs().max(dim=-1, keepdim=True).values.clamp_(min=1e-5)
+    y = (x*scale).round().clamp_(-128, 127) / scale
+    return y
+
+def weight_quant(w):
+    scale = 1.0 / w.abs().mean().clamp_(min=1e-5)
+    u = (w*scale).round().clamp_(-1, 1) / scale
+    return u
+
+class BitLinear(nn.Module):
+    def __init__(self, in_features, out_features):
+        super().__init__()
+        self.weight = nn.Parameter(torch.Tensor(out_features, in_features))
+
+    def forward(self, x):
+        # Implement 1-bit forward pass here
+        # This is a placeholder implementation
+        w = self.weight
+        x_norm = torch.nn.RMSNorm(x)
+        x_quant = x_norm + (activation_quant(x_norm) - x_norm).detach()
+        w_quant = w + (weight_quant(w) - w).detach()
+        return torch.nn.functional.linear(x_quant, w_quant)

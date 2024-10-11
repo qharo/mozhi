@@ -1,22 +1,24 @@
 import torch
-from dataset import get_dataset, RawDataset, get_split_loaders, split_dataloader
+from dataset import download_dataset, RawDataset, get_split_loaders, get_split_loaders
 from model import build_tkizers
 from config import config
 import wandb
 from model import create_model
 from accelerate import Accelerator
-from transformers import TrainingArguments, Trainer, get_scheduler
+from transformers import get_scheduler
 from tqdm import tqdm
-import optuna
+import psutil
+import GPUtil
 from torch.utils.data import DataLoader
+from evaluate import load
 
 
 def get_data_model_tkizer():
-    df_path = get_dataset()
+    df_path = download_dataset()
     tkizers = build_tkizers(df_path)   # build tkizer from src/tgt vocabs
     # tkized_dataset = tkize_dataset(df_path, src_tkizer, tgt_tkizer) # tkized data
     raw_dataset = RawDataset(df_path)
-    dataloaders = split_dataloader(
+    dataloaders = get_split_loaders(
             raw_dataset,
             tkizers
     )
@@ -24,14 +26,75 @@ def get_data_model_tkizer():
     model.to(config.device)
     return model, dataloaders, tkizers
 
-def evaluate(model, val_dataloader: DataLoader, epoch: int, step: int):
+# performance details
+def compute_metrics(eval_preds, tgt_tkizer) -> dict[str, float]:
+    metric = load("sacrebleu")
+    predictions = []
+    references = []
+    for batch in eval_preds:
+        preds = batch["predictions"]
+        labels = batch["labels"]
+        decoded_preds = tgt_tkizer.batch_decode(preds, skip_special_tokens=True)
+        decoded_labels = tgt_tkizer.batch_decode(labels, skip_special_tokens=True)
+        decoded_preds, decoded_labels = postprocess_text(decoded_preds, decoded_labels)
+        predictions.extend(decoded_preds)
+        references.extend(decoded_labels)
+    result = metric.compute(predictions=predictions, references=references)
+    return {"bleu": result["score"]}
+
+def postprocess_text(preds, labels):
+    preds = [pred.strip() for pred in preds]
+    labels = [[label.strip()] for label in labels]
+    return preds, labels
+
+# system details
+def get_system_metrics() -> dict[str, float]:
+    cpu_percent = psutil.cpu_percent()
+    memory_percent = psutil.virtual_memory().percent
+    gpu_metrics = {}
+    try:
+        gpus = GPUtil.getGPUs()
+        for i, gpu in enumerate(gpus):
+            gpu_metrics[f'gpu_{i}_usage'] = gpu.load * 100
+            gpu_metrics[f'gpu_{i}_memory'] = gpu.memoryUtil * 100
+    except:
+        # If GPUtil fails or no GPU is available
+        gpu_metrics['gpu_0_usage'] = 0
+        gpu_metrics['gpu_0_memory'] = 0
+    return {
+        'cpu_usage': cpu_percent,
+        'memory_usage': memory_percent,
+        **gpu_metrics
+    }
+
+def evaluate(model, val_dataloader: DataLoader, tkizers: tuple, epoch: int, step: int):
     model.eval()
     eval_loss = 0
+    eval_preds = []
     for eval_batch in tqdm(val_dataloader, total=len(val_dataloader), desc=f"Evaluation => Epoch {epoch + 1}, Step {step + 1}"):
         with torch.no_grad():
             eval_outputs = model(**eval_batch)
             eval_loss += eval_outputs.loss.item()
-    eval_loss /= len(val_dataloader)
+
+            logits = eval_outputs.logits
+            predictions = torch.argmax(logits, dim=-1)
+            eval_preds.append({
+                "predictions": predictions.detach().cpu(),
+                "labels": eval_batch["labels"].detach().cpu()
+            })
+
+    # Compute metrics
+    perf_metrics = compute_metrics(eval_preds, tkizers[1])
+    
+    # Calculate average loss
+    avg_loss = eval_loss / len(val_dataloader)
+    perf_metrics["loss"] = avg_loss
+    
+    # Log all metrics to wandb
+    if config.use_wandb:
+        print("YES", perf_metrics)
+        wandb.log(perf_metrics)
+
     print(f"Epoch {epoch + 1}, Step {step + 1}: Eval Loss: {eval_loss:.4f}")
     model.train()
     
@@ -62,7 +125,6 @@ def main():
         wandb.init(project=config.wandb_project, entity=config.wandb_entity)
         wandb.config.update(config)
 
-    best_eval_loss = float('inf')
     accumulation_steps = 4 # Adjust based on your needs
 
     # ======== MAIN TRAINING LOOP ==========
@@ -88,8 +150,13 @@ def main():
             progress_bar.set_postfix({"Loss": total_loss / (step + 1)})
             
             # ======= EVALUATE ============
+            if (step+1) % 10 == 0:
+                if config.use_wandb:
+                    system_metrics = get_system_metrics()
+                    wandb.log(system_metrics)
+
             if (step + 1) % 100 == 0:  # Evaluate less frequently
-                evaluate(model, val_dataloader, epoch, step)
+                evaluate(model, val_dataloader, tkizers, epoch, step)
 #                 # model.eval()
 #                 # eval_loss = 0
 #                 # total_steps = ( config.n_steps_per_epoch * config.val_split ) // config.train_split
