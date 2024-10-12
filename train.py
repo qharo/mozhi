@@ -103,11 +103,9 @@ def evaluate(model, val_dataloader: DataLoader, tkizers: tuple, epoch: int, step
 
     model.train()
     return best_eval_loss
-    
 
 
 def main():
-    # setup accelerate
     accelerator = Accelerator()
 
     # ====== LOAD DATA, TKIZER AND MODEL======= #
@@ -123,13 +121,15 @@ def main():
         num_training_steps=(len(train_dataloader) * config.num_train_epochs)
     )
 
+    if accelerator.is_main_process:
+        if config.use_wandb:
+            wandb.init(project=config.wandb_project, entity=config.wandb_entity)
+            wandb.config.update(config)
+
+    # setup accelerate
     model, optimizer, train_dataloader, val_dataloader = accelerator.prepare(
         model, optimizer, train_dataloader, val_dataloader
     ) # mixed precision training
-
-    if config.use_wandb:
-        wandb.init(project=config.wandb_project, entity=config.wandb_entity)
-        wandb.config.update(config)
 
     best_eval_loss = float('inf')
     accumulation_steps = 4 # Adjust based on your needs
@@ -158,7 +158,7 @@ def main():
             
             # ======= EVALUATE ============
             if (step+1) % 10 == 0:
-                if config.use_wandb:
+                if config.use_wandb and accelerator.is_main_process:
                     system_metrics = get_system_metrics()
                     wandb.log(system_metrics)
 
@@ -186,7 +186,7 @@ def main():
                 perf_metrics["val_loss"] = avg_loss
                 
                 # Log all metrics to wandb
-                if config.use_wandb:
+                if config.use_wandb and accelerator.is_main_process:
                     wandb.log(perf_metrics)
 
                 print(f"Epoch {epoch + 1}, Step {step + 1}: Eval Loss: {eval_loss:.4f}")
@@ -197,7 +197,8 @@ def main():
                     best_eval_loss = eval_loss
 
                     os.makedirs(config.output_dir, exist_ok=True)
-                    accelerator.save(model.state_dict(), f"{config.output_dir}/best_model.pt")
+                    accelerator.save(accelerator.unwrap_model(model).state_dict(), f"{config.output_dir}/best_model.pt")
+
 
                 model.train()   
 

@@ -12,7 +12,7 @@ class Config:
     val_split = 0.01
     test_split = 1 - (train_split + val_split)
     transfer_batch_size = 500
-    num_workers = 4
+    num_workers = 5
 
     # tkizer config
     tkizer_save: bool = True

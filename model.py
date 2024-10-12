@@ -146,5 +146,6 @@ class BitLinear(Module):
         x_norm = self.rms_norm(x)
         x_quant = x_norm + (activation_quant(x_norm) - x_norm).detach()
         w_new, scale = weight_quant(w)
+        self.scale = scale
         w_quant = w + (w_new - w).detach()
         return F.linear(x_quant, w_quant) / scale
