@@ -107,6 +107,7 @@ def evaluate(model, val_dataloader: DataLoader, tkizers: tuple, epoch: int, step
 
 def main():
     accelerator = Accelerator()
+    process_index = accelerator.process_index
 
     # ====== LOAD DATA, TKIZER AND MODEL======= #
     model, dataloaders, tkizers = get_data_model_tkizer()
@@ -121,20 +122,19 @@ def main():
         num_training_steps=(len(train_dataloader) * config.num_train_epochs)
     )
 
+    # ======= WANDB ========= #
     if accelerator.is_main_process:
         if config.use_wandb:
             wandb.init(project=config.wandb_project, entity=config.wandb_entity)
             wandb.config.update(config)
 
-    # setup accelerate
+    # preparing using accelerate // mixed precision training
     model, optimizer, train_dataloader, val_dataloader = accelerator.prepare(
         model, optimizer, train_dataloader, val_dataloader
-    ) # mixed precision training
-
-    best_eval_loss = float('inf')
-    accumulation_steps = 4 # Adjust based on your needs
+    ) 
 
     # ======== MAIN TRAINING LOOP ==========
+    best_eval_loss = float('inf')
     for epoch in range(config.num_train_epochs):
         model.train()
         total_loss = 0
@@ -143,12 +143,12 @@ def main():
         for step, batch in enumerate(train_dataloader):
             with accelerator.autocast():
                 outputs = model(**batch)
-                loss = outputs.loss / accumulation_steps
+                loss = outputs.loss / config.accumulation_steps
             
             accelerator.backward(loss)
-            total_loss += loss.item() * accumulation_steps
+            total_loss += loss.item() * config.accumulation_steps
             
-            if (step + 1) % accumulation_steps == 0:
+            if (step + 1) % config.accumulation_steps == 0:
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad()
@@ -157,12 +157,16 @@ def main():
             progress_bar.set_postfix({"Loss": total_loss / (step + 1)})
             
             # ======= EVALUATE ============
+            # log system metrics
             if (step+1) % 10 == 0:
                 if config.use_wandb and accelerator.is_main_process:
                     system_metrics = get_system_metrics()
+                    system_metrics['training_loss'] = total_loss
                     wandb.log(system_metrics)
 
-            if (step + 1) % 1000 == 0:  # Evaluate less frequently
+
+            # log performance metrics
+            if (step + 1) % 100 == 0:  # Evaluate less frequently
                 model.eval()
                 eval_loss = 0
                 eval_preds = []
@@ -180,27 +184,21 @@ def main():
 
                 # Compute metrics
                 perf_metrics = compute_metrics(eval_preds, tkizers[1])
-                
-                # Calculate average loss
-                avg_loss = eval_loss / len(val_dataloader)
-                perf_metrics["val_loss"] = avg_loss
-                
-                # Log all metrics to wandb
+                perf_metrics["val_loss"] = eval_loss / len(val_dataloader)
+
                 if config.use_wandb and accelerator.is_main_process:
                     wandb.log(perf_metrics)
 
-                print(f"Epoch {epoch + 1}, Step {step + 1}: Eval Loss: {eval_loss:.4f}")
+                print(f"Process {process_index} || Epoch {epoch + 1}, Step {step + 1}: Eval Loss: {eval_loss:.4f}")
 
-                #print(eval_loss, best_eval_loss, eval_loss < best_eval_loss)
                 if eval_loss < best_eval_loss:
-                    #print("comes here")
                     best_eval_loss = eval_loss
-
                     os.makedirs(config.output_dir, exist_ok=True)
                     accelerator.save(accelerator.unwrap_model(model).state_dict(), f"{config.output_dir}/best_model.pt")
 
-
                 model.train()   
+            
+            # =============================== #
 
 
     # Final test evaluation
