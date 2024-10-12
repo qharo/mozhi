@@ -1,6 +1,7 @@
 import torch
 from transformers import T5ForConditionalGeneration, T5Config, AutoTokenizer
 import torch.nn as nn
+from torch.nn import Module, Linear, RMSNorm, Identity, Parameter, Embedding, functional as F
 from config import config
 from datasets import IterableDataset
 import xformers.ops as xops
@@ -63,8 +64,8 @@ class DualTokenizerT5(T5ForConditionalGeneration):
     def __init__(self, t5config):
         super().__init__(t5config)
         self.shared = None
-        self.encoder.embed_tokens = nn.Embedding(config.src_vocab_size, config.d_model)
-        self.decoder.embed_tokens = nn.Embedding(config.tgt_vocab_size, config.d_model)
+        self.encoder.embed_tokens = Embedding(config.src_vocab_size, config.d_model)
+        self.decoder.embed_tokens = Embedding(config.tgt_vocab_size, config.d_model)
         # self.gradient_checkpointing_enable()
         self.enable_xformers()
 
@@ -90,31 +91,29 @@ def create_model():
     model = DualTokenizerT5(model_config)
 
     # Resize the output layer to match target vocabulary size
-    model.lm_head = nn.Linear(config.d_model, config.tgt_vocab_size, bias=False)
+    model.lm_head = Linear(config.d_model, config.tgt_vocab_size, bias=False)
 
     # Initialize weights randomly
     def init_weights(m):
-        if isinstance(m, nn.Linear) or isinstance(m, BitLinear):
+        if isinstance(m, Linear) or isinstance(m, BitLinear):
             torch.nn.init.xavier_uniform_(m.weight)
-        elif isinstance(m, nn.Embedding):
+        elif isinstance(m, Embedding):
             torch.nn.init.xavier_uniform_(m.weight)
 
     model = prepare_for_1_58bit_training(model)
     model.apply(init_weights)
 
-    print(model)
-
     return model
 
 def prepare_for_1_58bit_training(model):
     for name, module in model.named_children():
-        if isinstance(module, nn.Linear):
+        if isinstance(module, Linear):
             setattr(model, name, BitLinear(module.in_features, module.out_features))
         # elif isinstance(module, nn.SwiGLU):
         #     setattr(model, name, BitLinear(module.in_features, module.out_features))
-        elif isinstance(module, nn.RMSNorm):
+        elif isinstance(module, RMSNorm):
             # Remove RMSNorm layers
-            setattr(model, name, nn.Identity())
+            setattr(model, name, Identity())
         else:
             # Recursively apply the function to submodules
             prepare_for_1_58bit_training(module)
@@ -122,26 +121,30 @@ def prepare_for_1_58bit_training(model):
     return model
 
 
-def activation_quant(x):
-    scale = 127.0 / x.abs().max(dim=-1, keepdim=True).values.clamp_(min=1e-5)
-    y = (x*scale).round().clamp_(-128, 127) / scale
+def activation_quant(x, num_bits = 8):
+    Qn = -2 ** (num_bits - 1)
+    Qp = 2 ** (num_bits - 1) - 1
+    scale = Qp / x.abs().max(dim=-1, keepdim=True).values.clamp_(min=1e-5)
+    y = (x*scale).round().clamp_(Qn, Qp) / scale
     return y
 
 def weight_quant(w):
     scale = 1.0 / w.abs().mean().clamp_(min=1e-5)
-    u = (w*scale).round().clamp_(-1, 1) / scale
-    return u
+    u = (w*scale).round().clamp_(-1, 1)
+    return u, scale
 
-class BitLinear(nn.Module):
+class BitLinear(Module):
     def __init__(self, in_features, out_features):
         super().__init__()
-        self.weight = nn.Parameter(torch.Tensor(out_features, in_features))
+        self.weight = Parameter(torch.Tensor(out_features, in_features))
+        self.rms_norm = RMSNorm(in_features)
 
     def forward(self, x):
         # Implement 1-bit forward pass here
         # This is a placeholder implementation
         w = self.weight
-        x_norm = torch.nn.RMSNorm(x)
+        x_norm = self.rms_norm(x)
         x_quant = x_norm + (activation_quant(x_norm) - x_norm).detach()
-        w_quant = w + (weight_quant(w) - w).detach()
-        return torch.nn.functional.linear(x_quant, w_quant)
+        w_new, scale = weight_quant(w)
+        w_quant = w + (w_new - w).detach()
+        return F.linear(x_quant, w_quant) / scale

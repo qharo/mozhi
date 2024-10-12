@@ -11,6 +11,7 @@ import psutil
 import GPUtil
 from torch.utils.data import DataLoader
 from evaluate import load
+import os
 
 
 def get_data_model_tkizer():
@@ -67,7 +68,7 @@ def get_system_metrics() -> dict[str, float]:
         **gpu_metrics
     }
 
-def evaluate(model, val_dataloader: DataLoader, tkizers: tuple, epoch: int, step: int):
+def evaluate(model, val_dataloader: DataLoader, tkizers: tuple, epoch: int, step: int, accelerator, best_eval_loss: float):
     model.eval()
     eval_loss = 0
     eval_preds = []
@@ -88,15 +89,20 @@ def evaluate(model, val_dataloader: DataLoader, tkizers: tuple, epoch: int, step
     
     # Calculate average loss
     avg_loss = eval_loss / len(val_dataloader)
-    perf_metrics["loss"] = avg_loss
+    perf_metrics["val_loss"] = avg_loss
     
     # Log all metrics to wandb
     if config.use_wandb:
-        print("YES", perf_metrics)
         wandb.log(perf_metrics)
 
     print(f"Epoch {epoch + 1}, Step {step + 1}: Eval Loss: {eval_loss:.4f}")
+
+    if eval_loss < best_eval_loss:
+        best_eval_loss = eval_loss
+        accelerator.save(model.state_dict(), f"{config.output_dir}/best_model.pt")
+
     model.train()
+    return best_eval_loss
     
 
 
@@ -125,6 +131,7 @@ def main():
         wandb.init(project=config.wandb_project, entity=config.wandb_entity)
         wandb.config.update(config)
 
+    best_eval_loss = float('inf')
     accumulation_steps = 4 # Adjust based on your needs
 
     # ======== MAIN TRAINING LOOP ==========
@@ -155,56 +162,55 @@ def main():
                     system_metrics = get_system_metrics()
                     wandb.log(system_metrics)
 
-            if (step + 1) % 100 == 0:  # Evaluate less frequently
-                evaluate(model, val_dataloader, tkizers, epoch, step)
-#                 # model.eval()
-#                 # eval_loss = 0
-#                 # total_steps = ( config.n_steps_per_epoch * config.val_split ) // config.train_split
-#                 # for eval_batch in tqdm(val_dataloader, total=total_steps, desc=f"Evaluation => Epoch {epoch + 1}, Step {step + 1}"):
-#                 #     with torch.no_grad():
-#                 #         eval_outputs = model(**eval_batch)
-#                 #         eval_loss += eval_outputs.loss.item()
-#                 # eval_loss /= total_steps
-#                 # print(f"Epoch {epoch + 1}, Step {step + 1}: Eval Loss: {eval_loss:.4f}")
-#                 # model.train()
-#             # =============================
+            if (step + 1) % 1000 == 0:  # Evaluate less frequently
+                model.eval()
+                eval_loss = 0
+                eval_preds = []
+                for eval_batch in tqdm(val_dataloader, total=len(val_dataloader), desc=f"Evaluation => Epoch {epoch + 1}, Step {step + 1}"):
+                    with torch.no_grad():
+                        eval_outputs = model(**eval_batch)
+                        eval_loss += eval_outputs.loss.item()
 
-#     #             model.eval()
-#     #             eval_loss = 0
-#     #             for eval_batch in val_dataloader:
-#     #                 with torch.no_grad():
-#     #                     eval_outputs = model(**eval_batch)
-#     #                     eval_loss += eval_outputs.loss.item()
-#     #             eval_loss /= len(val_dataloader)
-#     #             print(f"Epoch {epoch + 1}, Step {step + 1}: Eval Loss: {eval_loss:.4f}")
+                        logits = eval_outputs.logits
+                        predictions = torch.argmax(logits, dim=-1)
+                        eval_preds.append({
+                            "predictions": predictions.detach().cpu(),
+                            "labels": eval_batch["labels"].detach().cpu()
+                        })
+
+                # Compute metrics
+                perf_metrics = compute_metrics(eval_preds, tkizers[1])
                 
-#     #             if config.use_wandb:
-#     #                 wandb.log({
-#     #                     "epoch": epoch + 1,
-#     #                     "step": step + 1,
-#     #                     "eval_loss": eval_loss,
-#     #                     "train_loss": total_loss / (step + 1)
-#     #                 })
+                # Calculate average loss
+                avg_loss = eval_loss / len(val_dataloader)
+                perf_metrics["val_loss"] = avg_loss
                 
-#     #             if eval_loss < best_eval_loss:
-#     #                 best_eval_loss = eval_loss
-#     #                 accelerator.save(model.state_dict(), f"{config.output_dir}/best_model.pt")
-                
-#     #             model.train()
-        
-#     #     print(f"Epoch {epoch + 1}/{config.num_train_epochs} completed. Average Loss: {total_loss / len(train_dataloader):.4f}")
+                # Log all metrics to wandb
+                if config.use_wandb:
+                    wandb.log(perf_metrics)
+
+                print(f"Epoch {epoch + 1}, Step {step + 1}: Eval Loss: {eval_loss:.4f}")
+
+                #print(eval_loss, best_eval_loss, eval_loss < best_eval_loss)
+                if eval_loss < best_eval_loss:
+                    #print("comes here")
+                    best_eval_loss = eval_loss
+
+                    os.makedirs(config.output_dir, exist_ok=True)
+                    accelerator.save(model.state_dict(), f"{config.output_dir}/best_model.pt")
+
+                model.train()   
 
 
-
-#     # # Final test evaluation
-#     # model.eval()
-#     # test_loss = 0
-#     # for test_batch in test_dataloader:
-#     #     with torch.no_grad():
-#     #         test_outputs = model(**test_batch)
-#     #         test_loss += test_outputs.loss.item()
-#     # test_loss /= len(test_dataloader)
-#     # print(f"Final Test Loss: {test_loss:.4f}")
+    # Final test evaluation
+    model.eval()
+    test_loss = 0
+    for test_batch in test_dataloader:
+        with torch.no_grad():
+            test_outputs = model(**test_batch)
+            test_loss += test_outputs.loss.item()
+    test_loss /= len(test_dataloader)
+    print(f"Final Test Loss: {test_loss:.4f}")
 
 
 if __name__ == '__main__':
@@ -248,3 +254,42 @@ if __name__ == '__main__':
 # #         wandb.log({"best_eval_loss": trial.value, **trial.params})
 
 # #     return study.best_params
+
+               
+#   # model.eval()
+#                 # eval_loss = 0
+#                 # total_steps = ( config.n_steps_per_epoch * config.val_split ) // config.train_split
+#                 # for eval_batch in tqdm(val_dataloader, total=total_steps, desc=f"Evaluation => Epoch {epoch + 1}, Step {step + 1}"):
+#                 #     with torch.no_grad():
+#                 #         eval_outputs = model(**eval_batch)
+#                 #         eval_loss += eval_outputs.loss.item()
+#                 # eval_loss /= total_steps
+#                 # print(f"Epoch {epoch + 1}, Step {step + 1}: Eval Loss: {eval_loss:.4f}")
+#                 # model.train()
+#             # =============================
+
+#     #             model.eval()
+#     #             eval_loss = 0
+#     #             for eval_batch in val_dataloader:
+#     #                 with torch.no_grad():
+#     #                     eval_outputs = model(**eval_batch)
+#     #                     eval_loss += eval_outputs.loss.item()
+#     #             eval_loss /= len(val_dataloader)
+#     #             print(f"Epoch {epoch + 1}, Step {step + 1}: Eval Loss: {eval_loss:.4f}")
+                
+#     #             if config.use_wandb:
+#     #                 wandb.log({
+#     #                     "epoch": epoch + 1,
+#     #                     "step": step + 1,
+#     #                     "eval_loss": eval_loss,
+#     #                     "train_loss": total_loss / (step + 1)
+#     #                 })
+                
+#     #             if eval_loss < best_eval_loss:
+#     #                 best_eval_loss = eval_loss
+#     #                 accelerator.save(model.state_dict(), f"{config.output_dir}/best_model.pt")
+                
+#     #             model.train()
+        
+#     #     print(f"Epoch {epoch + 1}/{config.num_train_epochs} completed. Average Loss: {total_loss / len(train_dataloader):.4f}")
+

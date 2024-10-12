@@ -9,7 +9,7 @@ class Config:
     data_save: bool = True
     data_save_path: str = 'data/dataset'
     train_split = 0.8
-    val_split = 0.0005
+    val_split = 0.01
     test_split = 1 - (train_split + val_split)
     transfer_batch_size = 500
     num_workers = 4
@@ -41,7 +41,7 @@ class Config:
     output_dir: str = "data/training"
 
     # W&B settings
-    use_wandb: bool = False
+    use_wandb: bool = True
     wandb_project: str = "mozhi"
     wandb_entity: str = "qharo"  # Set this to your wandb username or team name
 
