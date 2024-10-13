@@ -77,8 +77,8 @@ def log_perf_metrics(eval_preds, tgt_tkizer, val_loss) -> dict[str, float]:
         labels = batch["labels"]
         decoded_preds = tgt_tkizer.batch_decode(preds, skip_special_tokens=True)
         decoded_labels = tgt_tkizer.batch_decode(labels, skip_special_tokens=True)
-        decoded_preds = [pred.strip() for pred in preds]
-        decoded_labels = [[label.strip()] for label in labels]
+        decoded_preds = [pred.strip() for pred in decoded_preds]
+        decoded_labels = [[label.strip()] for label in decoded_labels]
         predictions.extend(decoded_preds)
         references.extend(decoded_labels)
     result = {"bleu": metric.compute(predictions=predictions, references=references)["score"]}
@@ -186,7 +186,7 @@ def main():
                 eval_loss = 0
                 eval_preds = []
                 model.to(accelerator.device)
-                for eval_batch in tqdm(val_dataloader, total=len(val_dataloader), desc=f"Evaluation => Epoch {epoch + 1}, Step {step + 1}"):
+                for eval_batch in tqdm(val_dataloader, total=len(val_dataloader), desc=f"Evaluation => Epoch {n_epoch + 1}, Step {n_step + 1}"):
                     batch = {k: v.to(accelerator.device) for k, v in eval_batch.items()}
 
                     with torch.no_grad():
@@ -203,7 +203,7 @@ def main():
                 if config.use_wandb and accelerator.is_main_process:
                     log_perf_metrics(eval_preds, tkizers[1], (eval_loss / len(val_dataloader)))
 
-                print(f"Process {accelerator.process_index} || Epoch {epoch + 1}, Step {step + 1}: Eval Loss: {eval_loss:.4f}")
+                print(f"Process {accelerator.process_index} || Epoch {n_epoch + 1}, Step {n_step + 1}: Eval Loss: {eval_loss:.4f}")
 
                 if eval_loss < best_eval_loss:
                     best_eval_loss = eval_loss
