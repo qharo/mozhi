@@ -8,6 +8,53 @@ import xformers.ops as xops
 import os
 import pandas as pd
 
+# ========= BITLINEAR LAYER ============ #
+def activation_quant(x, num_bits = 8):
+    Qn = -2 ** (num_bits - 1)
+    Qp = 2 ** (num_bits - 1) - 1
+    scale = Qp / x.abs().max(dim=-1, keepdim=True).values.clamp_(min=1e-5)
+    y = (x*scale).round().clamp_(Qn, Qp) / scale
+    return y
+
+def weight_quant(w):
+    scale = 1.0 / w.abs().mean().clamp_(min=1e-5)
+    u = (w*scale).round().clamp_(-1, 1)
+    return u, scale
+
+class BitLinear(Module):
+    def __init__(self, in_features, out_features):
+        super().__init__()
+        self.weight = Parameter(torch.Tensor(out_features, in_features))
+        self.rms_norm = RMSNorm(in_features)
+
+    def forward(self, x):
+        # Implement 1-bit forward pass here
+        # This is a placeholder implementation
+        w = self.weight
+        x_norm = self.rms_norm(x)
+        x_quant = x_norm + (activation_quant(x_norm) - x_norm).detach()
+        w_new, scale = weight_quant(w)
+        self.scale = scale
+        w_quant = w + (w_new - w).detach()
+        return F.linear(x_quant, w_quant) / scale
+
+
+# switch model's nn.Linear to BitLinear
+# model => bitnet_model
+def prepare_for_1_58bit_training(model):
+    for name, module in model.named_children():
+        if isinstance(module, Linear):
+            setattr(model, name, BitLinear(module.in_features, module.out_features))
+        elif isinstance(module, RMSNorm):
+            setattr(model, name, Identity())
+        else:
+            prepare_for_1_58bit_training(module)
+
+    return model
+
+
+
+
 # dataset = => Tuple(src_tkizer, tgt_tkizer : T5Tokenizer)
 def build_tkizers(df_path: str):
 
@@ -105,47 +152,3 @@ def create_model():
 
     return model
 
-def prepare_for_1_58bit_training(model):
-    for name, module in model.named_children():
-        if isinstance(module, Linear):
-            setattr(model, name, BitLinear(module.in_features, module.out_features))
-        # elif isinstance(module, nn.SwiGLU):
-        #     setattr(model, name, BitLinear(module.in_features, module.out_features))
-        elif isinstance(module, RMSNorm):
-            # Remove RMSNorm layers
-            setattr(model, name, Identity())
-        else:
-            # Recursively apply the function to submodules
-            prepare_for_1_58bit_training(module)
-    
-    return model
-
-
-def activation_quant(x, num_bits = 8):
-    Qn = -2 ** (num_bits - 1)
-    Qp = 2 ** (num_bits - 1) - 1
-    scale = Qp / x.abs().max(dim=-1, keepdim=True).values.clamp_(min=1e-5)
-    y = (x*scale).round().clamp_(Qn, Qp) / scale
-    return y
-
-def weight_quant(w):
-    scale = 1.0 / w.abs().mean().clamp_(min=1e-5)
-    u = (w*scale).round().clamp_(-1, 1)
-    return u, scale
-
-class BitLinear(Module):
-    def __init__(self, in_features, out_features):
-        super().__init__()
-        self.weight = Parameter(torch.Tensor(out_features, in_features))
-        self.rms_norm = RMSNorm(in_features)
-
-    def forward(self, x):
-        # Implement 1-bit forward pass here
-        # This is a placeholder implementation
-        w = self.weight
-        x_norm = self.rms_norm(x)
-        x_quant = x_norm + (activation_quant(x_norm) - x_norm).detach()
-        w_new, scale = weight_quant(w)
-        self.scale = scale
-        w_quant = w + (w_new - w).detach()
-        return F.linear(x_quant, w_quant) / scale

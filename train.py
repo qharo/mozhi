@@ -27,6 +27,27 @@ def get_data_model_tkizer():
     model.to(config.device)
     return model, dataloaders, tkizers
 
+def load_checkpoint(accelerator, model, optimizer, lr_scheduler):
+    checkpoint_path = f"{config.output_dir}/checkpoint.pt"
+    if os.path.exists(checkpoint_path):
+        checkpoint = accelerator.load(checkpoint_path)
+        accelerator.unwrap_model(model).load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        lr_scheduler.load_state_dict(checkpoint['lr_scheduler_state_dict'])
+        return checkpoint['epoch'], checkpoint['step']
+    return 0, 0
+
+def save_checkpoint(accelerator, model, optimizer, lr_scheduler, epoch, step, best_eval_loss):
+    checkpoint = {
+        'epoch': epoch,
+        'step': step,
+        'model_state_dict': accelerator.unwrap_model(model).state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'lr_scheduler_state_dict': lr_scheduler.state_dict(),
+        'best_eval_loss': best_eval_loss
+    }
+    accelerator.save(checkpoint, f"{config.output_dir}/checkpoint.pt")
+
 # ========= EVALUATE ========= #
 def log_perf_metrics(eval_preds, tgt_tkizer, val_loss) -> dict[str, float]:
     metric = load("sacrebleu")
@@ -96,16 +117,20 @@ def evaluate(accelerator, model, val_dataloader: DataLoader, tkizers: tuple, epo
         os.makedirs(config.output_dir, exist_ok=True)
         accelerator.save(accelerator.unwrap_model(model).state_dict(), f"{config.output_dir}/best_model.pt")
 
+
     model.train() 
 
 
 # ========== TRAIN =========== #
-def train_epoch(accelerator, model, dataloaders, tkizers, optimizer, lr_scheduler, n_epoch):
+def train_epoch(accelerator, model, dataloaders, tkizers, optimizer, lr_scheduler, n_epoch, start_step=0):
     total_loss = 0
     progress_bar = tqdm(total=len(dataloaders[0]), desc=f"Epoch {n_epoch + 1}/{config.num_train_epochs}")
     
     best_eval_loss = float('inf')
     for n_step, batch in enumerate(dataloaders[0]):
+        if n_step < start_step:
+            continue
+        
         with accelerator.autocast():
             outputs = model(**batch)
             loss = outputs.loss / config.accumulation_steps
@@ -124,14 +149,11 @@ def train_epoch(accelerator, model, dataloaders, tkizers, optimizer, lr_schedule
         if (n_step+1) % 10 == 0:
             if config.use_wandb and accelerator.is_main_process:
                 log_system_metrics(total_loss)
-                 # log performance metrics
+
+        # log performance metrics
         if (n_step + 1) % 100 == 0:  # Evaluate less frequently
             evaluate(accelerator, model, dataloaders[1], tkizers, n_epoch, n_step, best_eval_loss)
-
-# def train(accelerator, model, dataloaders, optimizer, lr_scheduler):
-
-
-
+            save_checkpoint(accelerator, model, optimizer, lr_scheduler, n_epoch, n_step, best_eval_loss)
 
 
 def main():
@@ -162,10 +184,26 @@ def main():
         model, optimizer, train_dataloader, val_dataloader
     ) 
 
-
+    start_epoch, start_step = load_checkpoint(accelerator, model, optimizer, lr_scheduler)
 
     for n_epoch in range(config.num_train_epochs):
-        train_epoch(accelerator, model, dataloaders, optimizer, lr_scheduler, n_epoch)
+        train_epoch(accelerator, model, dataloaders, optimizer, lr_scheduler, n_epoch, start_step if n_epoch == start_epoch else 0)
+        start_step = 0
+
+    model.eval()
+    test_loss = 0
+    for test_batch in test_dataloader:
+        with torch.no_grad():
+            test_outputs = model(**test_batch)
+            test_loss += test_outputs.loss.item()
+    test_loss /= len(test_dataloader)
+    print(f"Final Test Loss: {test_loss:.4f}")
+
+
+if __name__ == '__main__':
+    main()
+
+# def train(accelerator, model, dataloaders, optimizer, lr_scheduler):
     # # ======== MAIN TRAINING LOOP ==========
     # best_eval_loss = float('inf')
     # for epoch in range(config.num_train_epochs):
@@ -235,18 +273,7 @@ def main():
 
 
     # Final test evaluation
-    model.eval()
-    test_loss = 0
-    for test_batch in test_dataloader:
-        with torch.no_grad():
-            test_outputs = model(**test_batch)
-            test_loss += test_outputs.loss.item()
-    test_loss /= len(test_dataloader)
-    print(f"Final Test Loss: {test_loss:.4f}")
 
-
-if __name__ == '__main__':
-    main()
 
 
 
