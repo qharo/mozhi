@@ -1,207 +1,278 @@
 import torch
-from dataset import download_dataset, RawDataset, get_split_loaders, get_split_loaders
+from dataset import download_dataset, get_split_sets
 from model import build_tkizers
 from config import config
 import wandb
 from model import create_model
 from accelerate import Accelerator
-from transformers import get_scheduler
+from transformers import get_scheduler, Seq2SeqTrainer, Seq2SeqTrainingArguments
+from datasets import Dataset
 from tqdm import tqdm
 import psutil
 import GPUtil
 from torch.utils.data import DataLoader
+from functools import partial
 from evaluate import load
 import os
 
 # ======== SETUP ========= #
 def get_data_model_tkizer():
-    df_path = download_dataset()
+    raw_dataset, df_path = download_dataset()
     tkizers = build_tkizers(df_path)   # build tkizer from src/tgt vocabs
-    # tkized_dataset = tkize_dataset(df_path, src_tkizer, tgt_tkizer) # tkized data
-    raw_dataset = RawDataset(df_path)
-    dataloaders = get_split_loaders(
+    datasets = get_split_sets(
             raw_dataset,
             tkizers
     )
     model = create_model()
     model.to(config.device)
-    return model, dataloaders, tkizers
-
-def load_checkpoint(accelerator, model, optimizer, lr_scheduler):
-    checkpoint_path = f"{config.output_dir}/checkpoint.pt"
-    if os.path.exists(checkpoint_path):
-        checkpoint = accelerator.load(checkpoint_path)
-        accelerator.unwrap_model(model).load_state_dict(checkpoint['model_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        lr_scheduler.load_state_dict(checkpoint['lr_scheduler_state_dict'])
-        return checkpoint['epoch'], checkpoint['step']
-    return 0, 0
-
-def save_checkpoint(accelerator, model, optimizer, lr_scheduler, epoch, step, best_eval_loss):
-    checkpoint = {
-        'epoch': epoch,
-        'step': step,
-        'model_state_dict': accelerator.unwrap_model(model).state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'lr_scheduler_state_dict': lr_scheduler.state_dict(),
-        'best_eval_loss': best_eval_loss
-    }
-    accelerator.save(checkpoint, f"{config.output_dir}/checkpoint.pt")
-
-# ========= EVALUATE ========= #
-def log_perf_metrics(eval_preds, tgt_tkizer, val_loss) -> dict[str, float]:
-    metric = load("sacrebleu")
-    predictions = []
-    references = []
-    for batch in eval_preds:
-        preds = batch["predictions"]
-        labels = batch["labels"]
-        decoded_preds = tgt_tkizer.batch_decode(preds, skip_special_tokens=True)
-        decoded_labels = tgt_tkizer.batch_decode(labels, skip_special_tokens=True)
-        decoded_preds = [pred.strip() for pred in preds]
-        decoded_labels = [[label.strip()] for label in labels]
-        predictions.extend(decoded_preds)
-        references.extend(decoded_labels)
-    result = {"bleu": metric.compute(predictions=predictions, references=references)["score"]}
-    result["val_loss"] = val_loss
-    wandb.log(result)
+    return model, datasets, tkizers
 
 
-def log_system_metrics(total_loss):    
-    cpu_percent = psutil.cpu_percent()
-    memory_percent = psutil.virtual_memory().percent
-    gpu_metrics = {}
-    try:
-        gpus = GPUtil.getGPUs()
-        for i, gpu in enumerate(gpus):
-            gpu_metrics[f'gpu_{i}_usage'] = gpu.load * 100
-            gpu_metrics[f'gpu_{i}_memory'] = gpu.memoryUtil * 100
-    except:
-        # If GPUtil fails or no GPU is available
-        gpu_metrics['gpu_0_usage'] = 0
-        gpu_metrics['gpu_0_memory'] = 0
-    system_metrics = {
-        'cpu_usage': cpu_percent,
-        'memory_usage': memory_percent,
-        **gpu_metrics
-    }
-    system_metrics['training_loss'] = total_loss
-    wandb.log(system_metrics)
-
-
-def evaluate(accelerator, model, val_dataloader: DataLoader, tkizers: tuple, epoch: int, step: int,  best_eval_loss: float):
-    model.eval()
-
-    # evaluate batch
-    eval_loss = 0
-    eval_preds = []
-    for eval_batch in tqdm(val_dataloader, total=len(val_dataloader), desc=f"Evaluation => Epoch {epoch + 1}, Step {step + 1}"):
-        with torch.no_grad():
-            eval_outputs = model(**eval_batch)
-            eval_loss += eval_outputs.loss.item()
-
-            logits = eval_outputs.logits
-            predictions = torch.argmax(logits, dim=-1)
-            eval_preds.append({
-                "predictions": predictions.detach().cpu(),
-                "labels": eval_batch["labels"].detach().cpu()
-            })
-
-    if config.use_wandb and accelerator.is_main_process:
-        log_perf_metrics(eval_preds, tkizers[1], (eval_loss / len(val_dataloader)))
-
-    print(f"Process {accelerator.process_index} || Epoch {epoch + 1}, Step {step + 1}: Eval Loss: {eval_loss:.4f}")
-
-    if eval_loss < best_eval_loss:
-        best_eval_loss = eval_loss
-        os.makedirs(config.output_dir, exist_ok=True)
-        accelerator.save(accelerator.unwrap_model(model).state_dict(), f"{config.output_dir}/best_model.pt")
-
-
-    model.train() 
-
-
-# ========== TRAIN =========== #
-def train_epoch(accelerator, model, dataloaders, tkizers, optimizer, lr_scheduler, n_epoch, start_step=0):
-    total_loss = 0
-    progress_bar = tqdm(total=len(dataloaders[0]), desc=f"Epoch {n_epoch + 1}/{config.num_train_epochs}")
+def compute_metrics(tgt_tkizer, eval_preds):
+    metric = evaluate.load("sacrebleu")
+    preds, labels = eval_preds
+    if isinstance(preds, tuple):
+        preds = preds[0]
     
-    best_eval_loss = float('inf')
-    for n_step, batch in enumerate(dataloaders[0]):
-        if n_step < start_step:
-            continue
-        
-        with accelerator.autocast():
-            outputs = model(**batch)
-            loss = outputs.loss / config.accumulation_steps
-        
-        accelerator.backward(loss)
-        total_loss += loss.item() * config.accumulation_steps
-        
-        if (n_step + 1) % config.accumulation_steps == 0:
-            optimizer.step()
-            lr_scheduler.step()
-            optimizer.zero_grad()
-        
-        progress_bar.update(1)
-        progress_bar.set_postfix({"Loss": total_loss / (n_step + 1)})
+    decoded_preds = tgt_tkizer.batch_decode(preds, skip_special_tokens=True)
+    labels = np.where(labels != -100, labels, tgt_tkizer.pad_token_id)
+    decoded_labels = tgt_tkizer.batch_decode(labels, skip_special_tokens=True)
 
-        if (n_step+1) % 10 == 0:
-            if config.use_wandb and accelerator.is_main_process:
-                log_system_metrics(total_loss)
+    decoded_preds = [pred.strip() for pred in decoded_preds]
+    decoded_labels = [[label.strip()] for label in decoded_labels]
 
-        # log performance metrics
-        if (n_step + 1) % 100 == 0:  # Evaluate less frequently
-            evaluate(accelerator, model, dataloaders[1], tkizers, n_epoch, n_step, best_eval_loss)
-            save_checkpoint(accelerator, model, optimizer, lr_scheduler, n_epoch, n_step, best_eval_loss)
-
+    result = metric.compute(predictions=decoded_preds, references=decoded_labels)
+    return {"bleu": result["score"]}
 
 def main():
     accelerator = Accelerator()
-    process_index = accelerator.process_index
 
     # ====== LOAD DATA, TKIZER AND MODEL======= #
-    model, dataloaders, tkizers = get_data_model_tkizer()
-    train_dataloader, val_dataloader, test_dataloader = dataloaders
+    model, datasets, tkizers = get_data_model_tkizer()
+    train_dataset, val_dataset, test_dataset = datasets
+    partial_compute_metrics = partial(compute_metrics, tkizers[1])
 
-    # ===== TRAINING PARAMS ======= #
-    optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
-    lr_scheduler = get_scheduler(
-        "linear",
-        optimizer=optimizer,
-        num_warmup_steps=config.warmup_steps,
-        num_training_steps=(len(train_dataloader) * config.num_train_epochs)
+    training_args = Seq2SeqTrainingArguments(
+        output_dir=config.output_dir,
+        num_train_epochs=config.num_train_epochs,
+        per_device_train_batch_size=config.batch_size,
+        per_device_eval_batch_size=config.batch_size,
+        warmup_steps=config.warmup_steps,
+        weight_decay=config.weight_decay,
+        logging_dir=f"{config.output_dir}/logs",
+        logging_steps=10,
+        evaluation_strategy="steps",
+        eval_steps=config.eval_save_steps,
+        save_steps=config.eval_save_steps,
+        save_total_limit=3,
+        load_best_model_at_end=True,
+        metric_for_best_model="bleu",
+        greater_is_better=True,
+        fp16=True,  # Enable mixed precision training
+        report_to="wandb" if config.use_wandb else None,
     )
 
-    # ======= WANDB ========= #
-    if accelerator.is_main_process:
-        if config.use_wandb:
-            wandb.init(project=config.wandb_project, entity=config.wandb_entity)
-            wandb.config.update(config)
+    trainer = Seq2SeqTrainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        eval_dataset=val_dataset,
+        tokenizer=tkizers[1],
+        compute_metrics=partial_compute_metrics
+    )
 
-    # preparing using accelerate // mixed precision training
-    model, optimizer, train_dataloader, val_dataloader = accelerator.prepare(
-        model, optimizer, train_dataloader, val_dataloader
-    ) 
+    if config.use_wandb:
+        wandb.init(project=config.wandb_project, entity=config.wandb_entity)
+        wandb.config.update(config)
 
-    start_epoch, start_step = load_checkpoint(accelerator, model, optimizer, lr_scheduler)
+    # Check if there's a checkpoint to resume from
+    if os.path.exists(f"{config.output_dir}/checkpoint-latest"):
+        trainer.train(resume_from_checkpoint=True)
+    else:
+        trainer.train()
 
-    for n_epoch in range(config.num_train_epochs):
-        train_epoch(accelerator, model, dataloaders, optimizer, lr_scheduler, n_epoch, start_step if n_epoch == start_epoch else 0)
-        start_step = 0
+    # Evaluate on the test set
+    test_results = trainer.evaluate(test_dataset, metric_key_prefix="test")
+    print(f"Final Test Results: {test_results}")
 
-    model.eval()
-    test_loss = 0
-    for test_batch in test_dataloader:
-        with torch.no_grad():
-            test_outputs = model(**test_batch)
-            test_loss += test_outputs.loss.item()
-    test_loss /= len(test_dataloader)
-    print(f"Final Test Loss: {test_loss:.4f}")
-
+    # Save the final model
+    trainer.save_model(f"{config.output_dir}/final_model")
 
 if __name__ == '__main__':
     main()
+
+
+
+
+
+    # # ===== TRAINING PARAMS ======= #
+    # optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
+    # lr_scheduler = get_scheduler(
+    #     "linear",
+    #     optimizer=optimizer,
+    #     num_warmup_steps=config.warmup_steps,
+    #     num_training_steps=(len(train_dataloader) * config.num_train_epochs)
+    # )
+
+    # # ======= WANDB ========= #
+    # if accelerator.is_main_process:
+    #     if config.use_wandb:
+    #         wandb.init(project=config.wandb_project, entity=config.wandb_entity)
+    #         wandb.config.update(config)
+
+    # # preparing using accelerate // mixed precision training
+    # model, optimizer, train_dataloader, val_dataloader = accelerator.prepare(
+    #     model, optimizer, train_dataloader, val_dataloader
+    # ) 
+
+    # start_epoch, start_step = load_checkpoint(accelerator, model, optimizer, lr_scheduler)
+
+    # for n_epoch in range(config.num_train_epochs):
+    #     train_epoch(accelerator, model, dataloaders, optimizer, lr_scheduler, n_epoch, start_step if n_epoch == start_epoch else 0)
+    #     start_step = 0
+
+    # model.eval()
+    # test_loss = 0
+    # for test_batch in test_dataloader:
+    #     with torch.no_grad():
+    #         test_outputs = model(**test_batch)
+    #         test_loss += test_outputs.loss.item()
+    # test_loss /= len(test_dataloader)
+    # print(f"Final Test Loss: {test_loss:.4f}")
+
+
+
+
+
+# def load_checkpoint(accelerator, model, optimizer, lr_scheduler):
+#     checkpoint_path = f"{config.output_dir}/checkpoint.pt"
+#     if os.path.exists(checkpoint_path):
+#         checkpoint = accelerator.load(checkpoint_path)
+#         accelerator.unwrap_model(model).load_state_dict(checkpoint['model_state_dict'])
+#         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+#         lr_scheduler.load_state_dict(checkpoint['lr_scheduler_state_dict'])
+#         return checkpoint['epoch'], checkpoint['step']
+#     return 0, 0
+
+# def save_checkpoint(accelerator, model, optimizer, lr_scheduler, epoch, step, best_eval_loss):
+#     checkpoint = {
+#         'epoch': epoch,
+#         'step': step,
+#         'model_state_dict': accelerator.unwrap_model(model).state_dict(),
+#         'optimizer_state_dict': optimizer.state_dict(),
+#         'lr_scheduler_state_dict': lr_scheduler.state_dict(),
+#         'best_eval_loss': best_eval_loss
+#     }
+#     accelerator.save(checkpoint, f"{config.output_dir}/checkpoint.pt")
+
+# # ========= EVALUATE ========= #
+# def log_perf_metrics(eval_preds, tgt_tkizer, val_loss) -> dict[str, float]:
+#     metric = load("sacrebleu")
+#     predictions = []
+#     references = []
+#     for batch in eval_preds:
+#         preds = batch["predictions"]
+#         labels = batch["labels"]
+#         decoded_preds = tgt_tkizer.batch_decode(preds, skip_special_tokens=True)
+#         decoded_labels = tgt_tkizer.batch_decode(labels, skip_special_tokens=True)
+#         decoded_preds = [pred.strip() for pred in preds]
+#         decoded_labels = [[label.strip()] for label in labels]
+#         predictions.extend(decoded_preds)
+#         references.extend(decoded_labels)
+#     result = {"bleu": metric.compute(predictions=predictions, references=references)["score"]}
+#     result["val_loss"] = val_loss
+#     wandb.log(result)
+
+
+# def log_system_metrics(total_loss):    
+#     cpu_percent = psutil.cpu_percent()
+#     memory_percent = psutil.virtual_memory().percent
+#     gpu_metrics = {}
+#     try:
+#         gpus = GPUtil.getGPUs()
+#         for i, gpu in enumerate(gpus):
+#             gpu_metrics[f'gpu_{i}_usage'] = gpu.load * 100
+#             gpu_metrics[f'gpu_{i}_memory'] = gpu.memoryUtil * 100
+#     except:
+#         # If GPUtil fails or no GPU is available
+#         gpu_metrics['gpu_0_usage'] = 0
+#         gpu_metrics['gpu_0_memory'] = 0
+#     system_metrics = {
+#         'cpu_usage': cpu_percent,
+#         'memory_usage': memory_percent,
+#         **gpu_metrics
+#     }
+#     system_metrics['training_loss'] = total_loss
+#     wandb.log(system_metrics)
+
+
+# def evaluate(accelerator, model, val_dataloader: DataLoader, tkizers: tuple, epoch: int, step: int,  best_eval_loss: float):
+#     model.eval()
+
+#     # evaluate batch
+#     eval_loss = 0
+#     eval_preds = []
+#     for eval_batch in tqdm(val_dataloader, total=len(val_dataloader), desc=f"Evaluation => Epoch {epoch + 1}, Step {step + 1}"):
+#         with torch.no_grad():
+#             eval_outputs = model(**eval_batch)
+#             eval_loss += eval_outputs.loss.item()
+
+#             logits = eval_outputs.logits
+#             predictions = torch.argmax(logits, dim=-1)
+#             eval_preds.append({
+#                 "predictions": predictions.detach().cpu(),
+#                 "labels": eval_batch["labels"].detach().cpu()
+#             })
+
+#     if config.use_wandb and accelerator.is_main_process:
+#         log_perf_metrics(eval_preds, tkizers[1], (eval_loss / len(val_dataloader)))
+
+#     print(f"Process {accelerator.process_index} || Epoch {epoch + 1}, Step {step + 1}: Eval Loss: {eval_loss:.4f}")
+
+#     if eval_loss < best_eval_loss:
+#         best_eval_loss = eval_loss
+#         os.makedirs(config.output_dir, exist_ok=True)
+#         accelerator.save(accelerator.unwrap_model(model).state_dict(), f"{config.output_dir}/best_model.pt")
+
+
+#     model.train() 
+
+
+# # ========== TRAIN =========== #
+# def train_epoch(accelerator, model, dataloaders, tkizers, optimizer, lr_scheduler, n_epoch, start_step=0):
+#     total_loss = 0
+#     progress_bar = tqdm(total=len(dataloaders[0]), desc=f"Epoch {n_epoch + 1}/{config.num_train_epochs}")
+    
+#     best_eval_loss = float('inf')
+#     for n_step, batch in enumerate(dataloaders[0]):
+#         if n_step < start_step:
+#             continue
+        
+#         with accelerator.autocast():
+#             outputs = model(**batch)
+#             loss = outputs.loss / config.accumulation_steps
+        
+#         accelerator.backward(loss)
+#         total_loss += loss.item() * config.accumulation_steps
+        
+#         if (n_step + 1) % config.accumulation_steps == 0:
+#             optimizer.step()
+#             lr_scheduler.step()
+#             optimizer.zero_grad()
+        
+#         progress_bar.update(1)
+#         progress_bar.set_postfix({"Loss": total_loss / (n_step + 1)})
+
+#         if (n_step+1) % 10 == 0:
+#             if config.use_wandb and accelerator.is_main_process:
+#                 log_system_metrics(total_loss)
+
+#         # log performance metrics
+#         if (n_step + 1) % 100 == 0:  # Evaluate less frequently
+#             evaluate(accelerator, model, dataloaders[1], tkizers, n_epoch, n_step, best_eval_loss)
+#             save_checkpoint(accelerator, model, optimizer, lr_scheduler, n_epoch, n_step, best_eval_loss)
+
+
 
 # def train(accelerator, model, dataloaders, optimizer, lr_scheduler):
     # # ======== MAIN TRAINING LOOP ==========
