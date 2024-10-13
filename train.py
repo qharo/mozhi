@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader
 from evaluate import load
 import os
 
-
+# ======== SETUP ========= #
 def get_data_model_tkizer():
     df_path = download_dataset()
     tkizers = build_tkizers(df_path)   # build tkizer from src/tgt vocabs
@@ -27,8 +27,8 @@ def get_data_model_tkizer():
     model.to(config.device)
     return model, dataloaders, tkizers
 
-# performance details
-def compute_metrics(eval_preds, tgt_tkizer) -> dict[str, float]:
+# ========= EVALUATE ========= #
+def log_perf_metrics(eval_preds, tgt_tkizer, val_loss) -> dict[str, float]:
     metric = load("sacrebleu")
     predictions = []
     references = []
@@ -37,19 +37,16 @@ def compute_metrics(eval_preds, tgt_tkizer) -> dict[str, float]:
         labels = batch["labels"]
         decoded_preds = tgt_tkizer.batch_decode(preds, skip_special_tokens=True)
         decoded_labels = tgt_tkizer.batch_decode(labels, skip_special_tokens=True)
-        decoded_preds, decoded_labels = postprocess_text(decoded_preds, decoded_labels)
+        decoded_preds = [pred.strip() for pred in preds]
+        decoded_labels = [[label.strip()] for label in labels]
         predictions.extend(decoded_preds)
         references.extend(decoded_labels)
-    result = metric.compute(predictions=predictions, references=references)
-    return {"bleu": result["score"]}
+    result = {"bleu": metric.compute(predictions=predictions, references=references)["score"]}
+    result["val_loss"] = val_loss
+    wandb.log(result)
 
-def postprocess_text(preds, labels):
-    preds = [pred.strip() for pred in preds]
-    labels = [[label.strip()] for label in labels]
-    return preds, labels
 
-# system details
-def get_system_metrics() -> dict[str, float]:
+def log_system_metrics(total_loss):    
     cpu_percent = psutil.cpu_percent()
     memory_percent = psutil.virtual_memory().percent
     gpu_metrics = {}
@@ -62,14 +59,19 @@ def get_system_metrics() -> dict[str, float]:
         # If GPUtil fails or no GPU is available
         gpu_metrics['gpu_0_usage'] = 0
         gpu_metrics['gpu_0_memory'] = 0
-    return {
+    system_metrics = {
         'cpu_usage': cpu_percent,
         'memory_usage': memory_percent,
         **gpu_metrics
     }
+    system_metrics['training_loss'] = total_loss
+    wandb.log(system_metrics)
 
-def evaluate(model, val_dataloader: DataLoader, tkizers: tuple, epoch: int, step: int, accelerator, best_eval_loss: float):
+
+def evaluate(accelerator, model, val_dataloader: DataLoader, tkizers: tuple, epoch: int, step: int,  best_eval_loss: float):
     model.eval()
+
+    # evaluate batch
     eval_loss = 0
     eval_preds = []
     for eval_batch in tqdm(val_dataloader, total=len(val_dataloader), desc=f"Evaluation => Epoch {epoch + 1}, Step {step + 1}"):
@@ -84,25 +86,52 @@ def evaluate(model, val_dataloader: DataLoader, tkizers: tuple, epoch: int, step
                 "labels": eval_batch["labels"].detach().cpu()
             })
 
-    # Compute metrics
-    perf_metrics = compute_metrics(eval_preds, tkizers[1])
-    
-    # Calculate average loss
-    avg_loss = eval_loss / len(val_dataloader)
-    perf_metrics["val_loss"] = avg_loss
-    
-    # Log all metrics to wandb
-    if config.use_wandb:
-        wandb.log(perf_metrics)
+    if config.use_wandb and accelerator.is_main_process:
+        log_perf_metrics(eval_preds, tkizers[1], (eval_loss / len(val_dataloader)))
 
-    print(f"Epoch {epoch + 1}, Step {step + 1}: Eval Loss: {eval_loss:.4f}")
+    print(f"Process {accelerator.process_index} || Epoch {epoch + 1}, Step {step + 1}: Eval Loss: {eval_loss:.4f}")
 
     if eval_loss < best_eval_loss:
         best_eval_loss = eval_loss
-        accelerator.save(model.state_dict(), f"{config.output_dir}/best_model.pt")
+        os.makedirs(config.output_dir, exist_ok=True)
+        accelerator.save(accelerator.unwrap_model(model).state_dict(), f"{config.output_dir}/best_model.pt")
 
-    model.train()
-    return best_eval_loss
+    model.train() 
+
+
+# ========== TRAIN =========== #
+def train_epoch(accelerator, model, dataloaders, tkizers, optimizer, lr_scheduler, n_epoch):
+    total_loss = 0
+    progress_bar = tqdm(total=len(dataloaders[0]), desc=f"Epoch {n_epoch + 1}/{config.num_train_epochs}")
+    
+    best_eval_loss = float('inf')
+    for n_step, batch in enumerate(dataloaders[0]):
+        with accelerator.autocast():
+            outputs = model(**batch)
+            loss = outputs.loss / config.accumulation_steps
+        
+        accelerator.backward(loss)
+        total_loss += loss.item() * config.accumulation_steps
+        
+        if (n_step + 1) % config.accumulation_steps == 0:
+            optimizer.step()
+            lr_scheduler.step()
+            optimizer.zero_grad()
+        
+        progress_bar.update(1)
+        progress_bar.set_postfix({"Loss": total_loss / (n_step + 1)})
+
+        if (n_step+1) % 10 == 0:
+            if config.use_wandb and accelerator.is_main_process:
+                log_system_metrics(total_loss)
+                 # log performance metrics
+        if (n_step + 1) % 100 == 0:  # Evaluate less frequently
+            evaluate(accelerator, model, dataloaders[1], tkizers, n_epoch, n_step, best_eval_loss)
+
+# def train(accelerator, model, dataloaders, optimizer, lr_scheduler):
+
+
+
 
 
 def main():
@@ -133,70 +162,74 @@ def main():
         model, optimizer, train_dataloader, val_dataloader
     ) 
 
-    # ======== MAIN TRAINING LOOP ==========
-    best_eval_loss = float('inf')
-    for epoch in range(config.num_train_epochs):
-        model.train()
-        total_loss = 0
-        progress_bar = tqdm(total=len(train_dataloader), desc=f"Epoch {epoch + 1}/{config.num_train_epochs}")
+
+
+    for n_epoch in range(config.num_train_epochs):
+        train_epoch(accelerator, model, dataloaders, optimizer, lr_scheduler, n_epoch)
+    # # ======== MAIN TRAINING LOOP ==========
+    # best_eval_loss = float('inf')
+    # for epoch in range(config.num_train_epochs):
+    #     model.train()
+    #     total_loss = 0
+    #     progress_bar = tqdm(total=len(train_dataloader), desc=f"Epoch {epoch + 1}/{config.num_train_epochs}")
         
-        for step, batch in enumerate(train_dataloader):
-            with accelerator.autocast():
-                outputs = model(**batch)
-                loss = outputs.loss / config.accumulation_steps
+    #     for step, batch in enumerate(train_dataloader):
+    #         with accelerator.autocast():
+    #             outputs = model(**batch)
+    #             loss = outputs.loss / config.accumulation_steps
             
-            accelerator.backward(loss)
-            total_loss += loss.item() * config.accumulation_steps
+    #         accelerator.backward(loss)
+    #         total_loss += loss.item() * config.accumulation_steps
             
-            if (step + 1) % config.accumulation_steps == 0:
-                optimizer.step()
-                lr_scheduler.step()
-                optimizer.zero_grad()
+    #         if (step + 1) % config.accumulation_steps == 0:
+    #             optimizer.step()
+    #             lr_scheduler.step()
+    #             optimizer.zero_grad()
             
-            progress_bar.update(1)
-            progress_bar.set_postfix({"Loss": total_loss / (step + 1)})
+    #         progress_bar.update(1)
+    #         progress_bar.set_postfix({"Loss": total_loss / (step + 1)})
             
-            # ======= EVALUATE ============
-            # log system metrics
-            if (step+1) % 10 == 0:
-                if config.use_wandb and accelerator.is_main_process:
-                    system_metrics = get_system_metrics()
-                    system_metrics['training_loss'] = total_loss
-                    wandb.log(system_metrics)
+    #         # ======= EVALUATE ============
+    #         # log system metrics
+    #         if (step+1) % 10 == 0:
+    #             if config.use_wandb and accelerator.is_main_process:
+    #                 system_metrics = get_system_metrics()
+    #                 system_metrics['training_loss'] = total_loss
+    #                 wandb.log(system_metrics)
 
 
-            # log performance metrics
-            if (step + 1) % 100 == 0:  # Evaluate less frequently
-                model.eval()
-                eval_loss = 0
-                eval_preds = []
-                for eval_batch in tqdm(val_dataloader, total=len(val_dataloader), desc=f"Evaluation => Epoch {epoch + 1}, Step {step + 1}"):
-                    with torch.no_grad():
-                        eval_outputs = model(**eval_batch)
-                        eval_loss += eval_outputs.loss.item()
+    #         # log performance metrics
+    #         if (step + 1) % 100 == 0:  # Evaluate less frequently
+    #             model.eval()
+    #             eval_loss = 0
+    #             eval_preds = []
+    #             for eval_batch in tqdm(val_dataloader, total=len(val_dataloader), desc=f"Evaluation => Epoch {epoch + 1}, Step {step + 1}"):
+    #                 with torch.no_grad():
+    #                     eval_outputs = model(**eval_batch)
+    #                     eval_loss += eval_outputs.loss.item()
 
-                        logits = eval_outputs.logits
-                        predictions = torch.argmax(logits, dim=-1)
-                        eval_preds.append({
-                            "predictions": predictions.detach().cpu(),
-                            "labels": eval_batch["labels"].detach().cpu()
-                        })
+    #                     logits = eval_outputs.logits
+    #                     predictions = torch.argmax(logits, dim=-1)
+    #                     eval_preds.append({
+    #                         "predictions": predictions.detach().cpu(),
+    #                         "labels": eval_batch["labels"].detach().cpu()
+    #                     })
 
-                # Compute metrics
-                perf_metrics = compute_metrics(eval_preds, tkizers[1])
-                perf_metrics["val_loss"] = eval_loss / len(val_dataloader)
+    #             # Compute metrics
+    #             perf_metrics = compute_metrics(eval_preds, tkizers[1])
+    #             perf_metrics["val_loss"] = eval_loss / len(val_dataloader)
 
-                if config.use_wandb and accelerator.is_main_process:
-                    wandb.log(perf_metrics)
+    #             if config.use_wandb and accelerator.is_main_process:
+    #                 wandb.log(perf_metrics)
 
-                print(f"Process {process_index} || Epoch {epoch + 1}, Step {step + 1}: Eval Loss: {eval_loss:.4f}")
+    #             print(f"Process {process_index} || Epoch {epoch + 1}, Step {step + 1}: Eval Loss: {eval_loss:.4f}")
 
-                if eval_loss < best_eval_loss:
-                    best_eval_loss = eval_loss
-                    os.makedirs(config.output_dir, exist_ok=True)
-                    accelerator.save(accelerator.unwrap_model(model).state_dict(), f"{config.output_dir}/best_model.pt")
+    #             if eval_loss < best_eval_loss:
+    #                 best_eval_loss = eval_loss
+    #                 os.makedirs(config.output_dir, exist_ok=True)
+    #                 accelerator.save(accelerator.unwrap_model(model).state_dict(), f"{config.output_dir}/best_model.pt")
 
-                model.train()   
+
             
             # =============================== #
 
