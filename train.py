@@ -108,80 +108,6 @@ def log_system_metrics(total_loss):
     wandb.log(system_metrics)
 
 
-def evaluate(accelerator, model, val_dataloader: DataLoader, tkizers: tuple, epoch: int, step: int,  best_eval_loss: float):
-    model.eval()
-
-    # evaluate batch
-    eval_loss = 0
-    eval_preds = []
-    model.to(accelerator.device)
-    for eval_batch in tqdm(val_dataloader, total=len(val_dataloader), desc=f"Evaluation => Epoch {epoch + 1}, Step {step + 1}"):
-
-        # Move batch to the device
-        batch = {k: v.to(accelerator.device) for k, v in eval_batch.items()}
-
-        with torch.no_grad():
-            eval_outputs = model(**eval_batch)
-            eval_loss += eval_outputs.loss.item()
-
-            logits = eval_outputs.logits
-            predictions = torch.argmax(logits, dim=-1)
-            eval_preds.append({
-                "predictions": predictions.detach().cpu(),
-                "labels": eval_batch["labels"].detach().cpu()
-            })
-
-    if config.use_wandb and accelerator.is_main_process:
-        log_perf_metrics(eval_preds, tkizers[1], (eval_loss / len(val_dataloader)))
-
-    print(f"Process {accelerator.process_index} || Epoch {epoch + 1}, Step {step + 1}: Eval Loss: {eval_loss:.4f}")
-
-    if eval_loss < best_eval_loss:
-        best_eval_loss = eval_loss
-        os.makedirs(config.output_dir, exist_ok=True)
-        accelerator.save(accelerator.unwrap_model(model).state_dict(), f"{config.output_dir}/best_model.pt")
-
-
-    model.train() 
-
-
-# ========== TRAIN =========== #
-def train_epoch(accelerator, model, dataloaders, tkizers, optimizer, lr_scheduler, n_epoch, start_step=0):
-    total_loss = 0
-    progress_bar = tqdm(total=len(dataloaders[0]), desc=f"Epoch {n_epoch + 1}/{config.num_train_epochs}")
-    
-    best_eval_loss = float('inf')
-    for n_step, batch in enumerate(dataloaders[0]):
-        if n_step < start_step:
-            continue
-        
-        # Move batch to the device
-        batch = {k: v.to(accelerator.device) for k, v in batch.items()}
-
-        with accelerator.autocast():
-            outputs = model(**batch)
-            loss = outputs.loss / config.accumulation_steps
-        
-        accelerator.backward(loss)
-        total_loss += loss.item() * config.accumulation_steps
-        
-        if (n_step + 1) % config.accumulation_steps == 0:
-            optimizer.step()
-            lr_scheduler.step()
-            optimizer.zero_grad()
-        
-        progress_bar.update(1)
-        progress_bar.set_postfix({"Loss": total_loss / (n_step + 1)})
-
-        if (n_step+1) % 10 == 0:
-            if config.use_wandb and accelerator.is_main_process:
-                log_system_metrics(total_loss)
-
-        # log performance metrics
-        if (n_step + 1) % 100 == 0:  # Evaluate less frequently
-            evaluate(accelerator, model, dataloaders[1], tkizers, n_epoch, n_step, best_eval_loss)
-            save_checkpoint(accelerator, model, optimizer, lr_scheduler, n_epoch, n_step, best_eval_loss)
-
 
 def main():
     accelerator = Accelerator()
@@ -213,10 +139,84 @@ def main():
 
     start_epoch, start_step = load_checkpoint(accelerator, model, optimizer, lr_scheduler)
 
+
+    # === TRAINING LOOP ===
+
     for n_epoch in range(config.num_train_epochs):
-        # train_epoch(accelerator, model, dataloaders, tkiz)
-        train_epoch(accelerator, model, dataloaders, tkizers, optimizer, lr_scheduler, n_epoch, start_step if n_epoch == start_epoch else 0)
+
+        # === EPOCH LOOP ===
+
+        total_loss = 0
+        progress_bar = tqdm(total=len(dataloaders[0]), desc=f"Epoch {n_epoch + 1}/{config.num_train_epochs}")
+        
+        best_eval_loss = float('inf')
+        for n_step, batch in enumerate(dataloaders[0]):
+            if n_step < start_step:
+                continue
+            
+            # Move batch to the device
+            batch = {k: v.to(accelerator.device) for k, v in batch.items()}
+
+            with accelerator.autocast():
+                outputs = model(**batch)
+                loss = outputs.loss / config.accumulation_steps
+            
+            accelerator.backward(loss)
+            total_loss += loss.item() * config.accumulation_steps
+            
+            if (n_step + 1) % config.accumulation_steps == 0:
+                optimizer.step()
+                lr_scheduler.step()
+                optimizer.zero_grad()
+            
+            progress_bar.update(1)
+            progress_bar.set_postfix({"Loss": total_loss / (n_step + 1)})
+
+            if (n_step+1) % 10 == 0:
+                if config.use_wandb and accelerator.is_main_process:
+                    log_system_metrics(total_loss)
+
+            if (n_step + 1) % 100 == 0: 
+
+
+                # ==== EVALUATE === #
+                model.eval()
+
+                # evaluate batch
+                eval_loss = 0
+                eval_preds = []
+                model.to(accelerator.device)
+                for eval_batch in tqdm(val_dataloader, total=len(val_dataloader), desc=f"Evaluation => Epoch {epoch + 1}, Step {step + 1}"):
+                    batch = {k: v.to(accelerator.device) for k, v in eval_batch.items()}
+
+                    with torch.no_grad():
+                        eval_outputs = model(**eval_batch)
+                        eval_loss += eval_outputs.loss.item()
+
+                        logits = eval_outputs.logits
+                        predictions = torch.argmax(logits, dim=-1)
+                        eval_preds.append({
+                            "predictions": predictions.detach().cpu(),
+                            "labels": eval_batch["labels"].detach().cpu()
+                        })
+
+                if config.use_wandb and accelerator.is_main_process:
+                    log_perf_metrics(eval_preds, tkizers[1], (eval_loss / len(val_dataloader)))
+
+                print(f"Process {accelerator.process_index} || Epoch {epoch + 1}, Step {step + 1}: Eval Loss: {eval_loss:.4f}")
+
+                if eval_loss < best_eval_loss:
+                    best_eval_loss = eval_loss
+                    os.makedirs(config.output_dir, exist_ok=True)
+                    save_checkpoint(accelerator, model, optimizer, lr_scheduler, n_epoch, n_step, best_eval_loss)
+
+                model.train() 
+
+                # === END EVALUATE === #
+
         start_step = 0
+
+    # === END TRAIN LOOP === #
 
     model.eval()
     test_loss = 0
