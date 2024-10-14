@@ -78,7 +78,7 @@ def tkize(tkizers, batch):
 
 import time
 def tkize_dataset(df_path, tkizers):
-    df = pd.read_csv(df_path).head(1000)
+    df = pd.read_csv(df_path).head(2000000)
 
     input_ids = np.zeros((len(df), config.max_length))
     attention_masks = np.zeros((len(df), config.max_length))
@@ -107,6 +107,30 @@ def tkize_dataset(df_path, tkizers):
     np.save("data/input_ids", input_ids)
     np.save("data/attention_mask", attention_masks)
     np.save("data/labels", labels)
+    return "data/input_ids", "data/attention_mask", "data/labels"
+
+
+from torch.utils.data import TensorDataset, DataLoader
+
+def create_dataloader_from_numpy(input_ids_path, attention_mask_path, labels_path, batch_size=32, shuffle=True):
+    # Load numpy arrays
+    input_ids = np.load(input_ids_path)
+    attention_mask = np.load(attention_mask_path)
+    labels = np.load(labels_path)
+    
+    # Convert numpy arrays to PyTorch tensors
+    input_ids_tensor = torch.tensor(input_ids, dtype=torch.long)
+    attention_mask_tensor = torch.tensor(attention_mask, dtype=torch.long)
+    labels_tensor = torch.tensor(labels, dtype=torch.long)
+    
+    # Create TensorDataset
+    dataset = TensorDataset(input_ids_tensor, attention_mask_tensor, labels_tensor)
+    
+    # Create DataLoader
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
+    
+    return dataloader
+
 
 # creates split dataloaders
 def get_split_loaders(dataset, tkizers, seed=42):
