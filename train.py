@@ -16,7 +16,7 @@
 # import os
 
 import torch
-from dataset import download_dataset, RawDataset, get_split_loaders, get_split_loaders, tkize_dataset, create_dataloader_from_numpy
+from dataset import download_dataset, get_tkized_dataloaders
 from model import build_tkizers
 from config import config
 import wandb
@@ -30,21 +30,11 @@ from torch.utils.data import DataLoader
 from evaluate import load
 import os
 
-
-
 # ======== SETUP ========= #
 def get_data_model_tkizer():
     df_path = download_dataset()
     tkizers = build_tkizers(df_path)   # build tkizer from src/tgt vocabs
-    # tkized_dataset = tkize_dataset(df_path, src_tkizer, tgt_tkizer) # tkized data
-    paths = tkize_dataset(df_path, tkizers)
-    dl = create_dataloader_from_numpy(paths)
-    print(next(iter(dl)))
-    raw_dataset = RawDataset(df_path)
-    dataloaders = get_split_loaders(
-            raw_dataset,
-            tkizers
-    )
+    dataloaders = get_tkized_dataloaders(df_path, tkizers)
     model = create_model()
     model.to(config.device)
     return model, dataloaders, tkizers
