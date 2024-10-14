@@ -78,22 +78,35 @@ def tkize(tkizers, batch):
 
 import time
 def tkize_dataset(df_path, tkizers):
-    df = pd.read_csv(df_path).head(100)
-    time1 = time.time()
+    df = pd.read_csv(df_path).head(1000)
 
-    progress_bar = tqdm(total=len(df), desc="Tokenizing")
-    def get_value(row, tkizer):
-        progress_bar.update(1)
-        output = tkizer(row)
-        return np.array(output['input_ids']), np.array(output['attention_mask'])
+    input_ids = np.zeros((len(df), config.max_length))
+    attention_masks = np.zeros((len(df), config.max_length))
+    labels = np.zeros((len(df), config.max_length))
 
-    # Apply the function to the 'src' column
-    output = df['src'].apply(lambda x: get_value(x, tkizers[0]))
-    print(output[0])
-    tgt_input_ids, _ = df['tgt'].apply(lambda x: get_value(x, tkizers[1]))
+    for i, row in tqdm(df.iterrows(), total=len(df), desc="Tokenizing"):
+        src_tokens = tkizers[0](
+                        row['src'])
+                        # padding="max_length",
+                        # truncation=True,
+                        # max_length=config.max_length,
+                        # return_tensors="pt")
+        tgt_tokens = tkizers[1](
+                        row['tgt'])
+                        # padding="max_length",
+                        # truncation=True,
+                        # max_length=config.max_length,
+                        # return_tensors="pt")
 
-    print(type(src_input_ids))
-    print(time.time() - time1)
+        src_length = len(src_tokens['input_ids'])
+        tgt_length = len(tgt_tokens['input_ids'])
+        input_ids[i][:src_length] = src_tokens['input_ids'][:config.max_length]
+        attention_masks[i][:src_length] = src_tokens['attention_mask'][:config.max_length]
+        labels[i][:tgt_length] = tgt_tokens['input_ids'][:config.max_length]
+
+    np.save("data/input_ids", input_ids)
+    np.save("data/attention_mask", attention_masks)
+    np.save("data/labels", labels)
 
 # creates split dataloaders
 def get_split_loaders(dataset, tkizers, seed=42):

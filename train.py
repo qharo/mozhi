@@ -16,7 +16,7 @@
 # import os
 
 import torch
-from dataset import download_dataset, RawDataset, get_split_loaders, get_split_loaders
+from dataset import download_dataset, RawDataset, get_split_loaders, get_split_loaders, tkize_dataset
 from model import build_tkizers
 from config import config
 import wandb
@@ -37,6 +37,7 @@ def get_data_model_tkizer():
     df_path = download_dataset()
     tkizers = build_tkizers(df_path)   # build tkizer from src/tgt vocabs
     # tkized_dataset = tkize_dataset(df_path, src_tkizer, tgt_tkizer) # tkized data
+    tkize_dataset(df_path, tkizers)
     raw_dataset = RawDataset(df_path)
     dataloaders = get_split_loaders(
             raw_dataset,
