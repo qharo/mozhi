@@ -76,6 +76,25 @@ def tkize(tkizers, batch):
         "labels": tgt_tokens['input_ids'],
     }
 
+import time
+def tkize_dataset(df_path, tkizers):
+    df = pd.read_csv(df_path).head(100)
+    time1 = time.time()
+
+    progress_bar = tqdm(total=len(df), desc="Tokenizing")
+    def get_value(row, tkizer):
+        progress_bar.update(1)
+        output = tkizer(row)
+        return np.array(output['input_ids']), np.array(output['attention_mask'])
+
+    # Apply the function to the 'src' column
+    output = df['src'].apply(lambda x: get_value(x, tkizers[0]))
+    print(output[0])
+    tgt_input_ids, _ = df['tgt'].apply(lambda x: get_value(x, tkizers[1]))
+
+    print(type(src_input_ids))
+    print(time.time() - time1)
+
 # creates split dataloaders
 def get_split_loaders(dataset, tkizers, seed=42):
     total_size = len(dataset)
