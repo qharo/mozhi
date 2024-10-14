@@ -30,35 +30,6 @@ from torch.utils.data import DataLoader
 from evaluate import load
 import os
 
-# ======== SETUP ========= #
-def get_data_model_tkizer():
-    df_path = download_dataset()
-    tkizers = build_tkizers(df_path)   # build tkizer from src/tgt vocabs
-    dataloaders = get_tkized_dataloaders(df_path, tkizers)
-    model = create_model()
-    model.to(config.device)
-    return model, dataloaders, tkizers
-
-def load_checkpoint(accelerator, model, optimizer, lr_scheduler):
-    checkpoint_path = f"{config.output_dir}/checkpoint.pt"
-    if os.path.exists(checkpoint_path):
-        checkpoint = accelerator.load(checkpoint_path)
-        accelerator.unwrap_model(model).load_state_dict(checkpoint['model_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        lr_scheduler.load_state_dict(checkpoint['lr_scheduler_state_dict'])
-        return checkpoint['epoch'], checkpoint['step']
-    return 0, 0
-
-def save_checkpoint(accelerator, model, optimizer, lr_scheduler, epoch, step, best_eval_loss):
-    checkpoint = {
-        'epoch': epoch,
-        'step': step,
-        'model_state_dict': accelerator.unwrap_model(model).state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'lr_scheduler_state_dict': lr_scheduler.state_dict(),
-        'best_eval_loss': best_eval_loss
-    }
-    accelerator.save(checkpoint, f"{config.output_dir}/checkpoint.pt")
 
 # ========= EVALUATE ========= #
 def log_perf_metrics(eval_preds, tgt_tkizer, val_loss) -> dict[str, float]:
@@ -104,10 +75,13 @@ def log_system_metrics(total_loss):
 
 def main():
     accelerator = Accelerator()
-    process_index = accelerator.process_index
 
     # ====== LOAD DATA, TKIZER AND MODEL======= #
-    model, dataloaders, tkizers = get_data_model_tkizer()
+    df_path = download_dataset()
+    tkizers = build_tkizers(df_path)   # build tkizer from src/tgt vocabs
+    dataloaders = get_tkized_dataloaders(df_path, tkizers)
+    model = create_model()
+    model.to(config.device)
     train_dataloader, val_dataloader, test_dataloader = dataloaders
 
     # ===== TRAINING PARAMS ======= #
@@ -130,11 +104,17 @@ def main():
         model, optimizer, train_dataloader, val_dataloader
     ) 
 
-    start_epoch, start_step = load_checkpoint(accelerator, model, optimizer, lr_scheduler)
-
+    start_epoch, start_step = 0, 0
+    checkpoint_path = f"{config.output_dir}/checkpoint.pt"
+    if os.path.exists(checkpoint_path):
+        checkpoint = accelerator.load(checkpoint_path)
+        accelerator.unwrap_model(model).load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        lr_scheduler.load_state_dict(checkpoint['lr_scheduler_state_dict'])
+        start_epoch, start_step = checkpoint['epoch'], checkpoint['step']
 
     # === TRAINING LOOP ===
-
+    print(accelerator.state)
     for n_epoch in range(config.num_train_epochs):
 
         # === EPOCH LOOP ===
@@ -200,8 +180,17 @@ def main():
 
                 if eval_loss < best_eval_loss:
                     best_eval_loss = eval_loss
-                    os.makedirs(config.output_dir, exist_ok=True)
-                    save_checkpoint(accelerator, model, optimizer, lr_scheduler, n_epoch, n_step, best_eval_loss)
+                    os.makedirs(config.output_dir, exist_ok=True)    
+                    checkpoint = {
+                        'epoch': n_epoch,
+                        'step': n_step,
+                        'model_state_dict': accelerator.unwrap_model(model).state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'lr_scheduler_state_dict': lr_scheduler.state_dict(),
+                        'best_eval_loss': best_eval_loss
+                    }
+                    accelerator.save(checkpoint, f"{config.output_dir}/checkpoint.pt")
+                    # save_checkpoint(accelerator, model, optimizer, lr_scheduler, n_epoch, n_step, best_eval_loss)
 
                 model.train() 
 

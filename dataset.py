@@ -54,7 +54,7 @@ def create_dataloaders(np_input_ids, np_attention_mask, np_labels):
     def collate_fn(batch):
         return {k: torch.stack(v) for k, v in zip(['input_ids', 'attention_mask', 'labels'], zip(*batch))}
     
-    return [DataLoader(ds, batch_size=config.batch_size, shuffle=(i==0), collate_fn=collate_fn) for i, ds in enumerate(datasets)]
+    return [DataLoader(ds, batch_size=config.batch_size, shuffle=(i==0), num_workers=2, pin_memory=True, collate_fn=collate_fn) for i, ds in enumerate(datasets)]
 
 # from df_path, tokenizers
 # df_path, tkizers => dataloaders
