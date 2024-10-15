@@ -51,6 +51,8 @@ def create_dataloaders(np_input_ids, np_attention_mask, np_labels):
     sizes.append(len(dataset) - sum(sizes))
     datasets = random_split(dataset, sizes)
     
+    return datasets
+
     def collate_fn(batch):
         return {k: torch.stack(v) for k, v in zip(['input_ids', 'attention_mask', 'labels'], zip(*batch))}
     
