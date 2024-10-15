@@ -44,37 +44,46 @@ def download_dataset() -> str:
 
 # from np arrays create dataloaders
 # np_array => dataloaders
-def create_dataloaders(np_input_ids, np_attention_mask, np_labels):
-    tensors = [torch.tensor(arr, dtype=torch.long) for arr in (np_input_ids, np_attention_mask, np_labels)]
+def create_dataloaders(np_input_ids, np_attention_mask, np_decoder_ids, np_labels):
+    tensors = [torch.tensor(arr, dtype=torch.long) for arr in (np_input_ids, np_attention_mask, np_decoder_ids, np_labels)]
     dataset = TensorDataset(*tensors)
     sizes = [int(config.train_split * len(dataset)), int(config.val_split * len(dataset))]
     sizes.append(len(dataset) - sum(sizes))
     datasets = random_split(dataset, sizes)
     
     def collate_fn(batch):
-        return {k: torch.stack(v) for k, v in zip(['input_ids', 'attention_mask', 'labels'], zip(*batch))}
+        return {k: torch.stack(v) for k, v in zip(['input_ids', 'attention_mask',"decoder_input_ids", 'labels'], zip(*batch))}
     
     return [DataLoader(ds, batch_size=config.batch_size, shuffle=(i==0), collate_fn=collate_fn) for i, ds in enumerate(datasets)]
 
 # from df_path, tokenizers
 # df_path, tkizers => dataloaders
-def get_tkized_dataloaders(df_path, tkizers):
-    cache_files = ["data/input_ids.npy", "data/attention_mask.npy", "data/labels.npy"]
+def get_tkized_dataloaders(df_path, tkizer):
+    cache_files = ["data/input_ids.npy", "data/attention_mask.npy",  "data/decoder_input_ids.npy", "data/labels.npy"]
     if all(os.path.exists(f) for f in cache_files):
         return create_dataloaders(*[np.load(f) for f in cache_files])
-    
+
     df = pd.read_csv(df_path).head(500000)
-    src_tkizer, tgt_tkizer = tkizers
-    arrays = [np.zeros((len(df), config.max_length)) for _ in range(3)]
-    
+    arrays = [np.zeros((len(df), config.max_length)) for _ in range(4)]  # Now 4 arrays instead of 3
+
     for i, row in tqdm(df.iterrows(), total=len(df), desc="Tokenizing"):
-        for j, (tkizer, col) in enumerate(zip([src_tkizer, src_tkizer, tgt_tkizer], ['src', 'src', 'tgt'])):
-            tokens = tkizer(row[col])
-            arrays[j][i][:len(tokens['input_ids'])] = tokens['input_ids' if j != 1 else 'attention_mask'][:config.max_length]
-    
-    for arr, name in zip(arrays, ['input_ids', 'attention_mask', 'labels']):
+        # Tokenize source text
+        src_tokens = tkizer(row['src'], max_length=config.max_length, padding='max_length', truncation=True)
+        arrays[0][i] = src_tokens['input_ids']
+        arrays[1][i] = src_tokens['attention_mask']
+
+        # Tokenize target text
+        tgt_tokens = tkizer(row['tgt'], max_length=config.max_length, padding='max_length', truncation=True)
+        arrays[3][i] = tgt_tokens['input_ids']
+        
+    # Create decoder_input_ids outside the loop
+    arrays[3] = np.roll(arrays[2], shift=1, axis=1)
+    arrays[3][:, 0] = tkizer.pad_token_id  #
+
+    # Save arrays
+    for arr, name in zip(arrays, ['input_ids', 'attention_mask','decoder_input_ids', 'labels']):
         np.save(f"data/{name}", arr)
-    
+
     return create_dataloaders(*arrays)
 
 # serves from DataFrame
