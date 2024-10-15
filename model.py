@@ -1,12 +1,13 @@
 import torch
 from transformers import T5ForConditionalGeneration, T5Config, AutoTokenizer
 import torch.nn as nn
-from torch.nn import Module, Linear, RMSNorm, Identity, Parameter, Embedding, functional as F
+from torch.nn import Module, Linear, Identity, Parameter, Embedding, functional as F
 from config import config
 from datasets import IterableDataset
 import xformers.ops as xops
 import os
 import pandas as pd
+from itertools import zip_longest
 
 # ========= BITLINEAR LAYER ============ #
 def activation_quant(x, num_bits = 8):
@@ -25,7 +26,7 @@ class BitLinear(Module):
     def __init__(self, in_features, out_features):
         super().__init__()
         self.weight = Parameter(torch.Tensor(out_features, in_features))
-        self.rms_norm = RMSNorm(in_features)
+        self.rms_norm = torch.nn.RMSNorm(in_features)
 
     def forward(self, x):
         # Implement 1-bit forward pass here
@@ -54,25 +55,27 @@ def prepare_for_1_58bit_training(model):
 
 
 
-
-# dataset = => Tuple(src_tkizer, tgt_tkizer : T5Tokenizer)
-def build_tkizers(df_path: str):
-
+def build_tkizer(df_path: str):
     if config.tkizer_save:
-        if os.path.exists(config.src_tkizer_save_path) and os.path.exists(config.tgt_tkizer_save_path):
-            src_tkizer = AutoTokenizer.from_pretrained(config.src_tkizer_save_path, use_fast=True)
-            tgt_tkizer = AutoTokenizer.from_pretrained(config.tgt_tkizer_save_path, use_fast=True)
-            print(f"Tokenizers loaded")
-            config.pad_token_id = src_tkizer.pad_token_id
-            return src_tkizer, tgt_tkizer
+        if os.path.exists(config.tkizer_save_path):
+            tkizer = AutoTokenizer.from_pretrained(config.tkizer_save_path, use_fast=True)
+            print(f"Tokenizer loaded")
+            config.pad_token_id = tkizer.pad_token_id
+            return tkizer
 
     df = pd.read_csv(df_path)
-    iterator = lambda x: df[x].tolist()
+    
+     # Interleave source and target texts
+    src_texts = df['src'].tolist()
+    tgt_texts = df['tgt'].tolist()
+    interleaved_texts = [text for pair in zip_longest(src_texts, tgt_texts) for text in pair if text is not None]
 
-    # train tkizer from our datasets
+
+    # Train tokenizer from our datasets
     pretrained_tkizer = AutoTokenizer.from_pretrained(config.model_name, use_fast=True)
-    src_tkizer = pretrained_tkizer.train_new_from_iterator(iterator('src'), vocab_size=config.src_vocab_size)
-    tgt_tkizer = pretrained_tkizer.train_new_from_iterator(iterator('tgt'), vocab_size=config.tgt_vocab_size)
+    
+    # Train new tokenizer with interleaved texts
+    tkizer = pretrained_tkizer.train_new_from_iterator(interleaved_texts, vocab_size=config.vocab_size)
 
     # Ensure all necessary special tokens are present
     special_tokens = {
@@ -80,52 +83,37 @@ def build_tkizers(df_path: str):
         'unk_token': '<unk>',
         'pad_token': '<pad>',
     }
-
-    # add special tokens
-    src_tkizer.add_special_tokens(special_tokens)
-    tgt_tkizer.add_special_tokens(special_tokens)
-    config.pad_token_id = src_tkizer.pad_token_id
+    
+    # Add special tokens
+    tkizer.add_special_tokens(special_tokens)
+    config.pad_token_id = tkizer.pad_token_id
 
     # Add extra_id tokens (sentinel tokens)
     num_extra_ids = 100  # T5 typically uses 100 sentinel tokens
-    src_tkizer.add_special_tokens({'additional_special_tokens': [f'<extra_id_{i}>' for i in range(num_extra_ids)]})
-    tgt_tkizer.add_special_tokens({'additional_special_tokens': [f'<extra_id_{i}>' for i in range(num_extra_ids)]})
+    tkizer.add_special_tokens({'additional_special_tokens': [f'<extra_id_{i}>' for i in range(num_extra_ids)]})
 
-
-    # save tkizers
+    # Save tokenizer
     if config.tkizer_save:
-        if not os.path.exists(config.src_tkizer_save_path):
-            os.makedirs(config.src_tkizer_save_path)
-            src_tkizer.save_pretrained(config.src_tkizer_save_path)
-        if not os.path.exists(config.tgt_tkizer_save_path):
-            os.makedirs(config.tgt_tkizer_save_path)
-            tgt_tkizer.save_pretrained(config.tgt_tkizer_save_path)
+        if not os.path.exists(config.tkizer_save_path):
+            os.makedirs(config.tkizer_save_path)
+        tkizer.save_pretrained(config.tkizer_save_path)
         print(f"Tokenizer saved")
 
+    return tkizer
 
-    return src_tkizer, tgt_tkizer
+
+def enable_xformers(model):
+    for layer in model.encoder.block + model.decoder.block:
+        layer.layer[0].SelfAttention.process_mask = xops.memory_efficient_attention
+        if hasattr(layer.layer[-1], 'EncDecAttention'):
+            layer.layer[-1].EncDecAttention.process_mask = xops.memory_efficient_attention
+    return model
 
 
-# src/tgt tkizer child of t5
-class DualTokenizerT5(T5ForConditionalGeneration):
-    def __init__(self, t5config):
-        super().__init__(t5config)
-        self.shared = None
-        self.encoder.embed_tokens = Embedding(config.src_vocab_size, config.d_model)
-        self.decoder.embed_tokens = Embedding(config.tgt_vocab_size, config.d_model)
-        # self.gradient_checkpointing_enable()
-        self.enable_xformers()
-
-    def enable_xformers(self):
-        for layer in self.encoder.block + self.decoder.block:
-            layer.layer[0].SelfAttention.process_mask = xops.memory_efficient_attention
-            if hasattr(layer.layer[-1], 'EncDecAttention'):
-                layer.layer[-1].EncDecAttention.process_mask = xops.memory_efficient_attention
-
-# creates model
+# create new model => 
 def create_model():
     model_config = T5Config(
-        vocab_size=max(config.src_vocab_size, config.tgt_vocab_size),  # Set to max for compatibility
+        vocab_size=config.vocab_size,  # Use a single vocab_size
         d_model=config.d_model,
         d_kv=config.d_model // config.num_heads,
         d_ff=config.d_ff,
@@ -135,10 +123,12 @@ def create_model():
         decoder_start_token_id=config.pad_token_id,
         # use_cache=False,
     )
-    model = DualTokenizerT5(model_config)
-
-    # Resize the output layer to match target vocabulary size
-    model.lm_head = Linear(config.d_model, config.tgt_vocab_size, bias=False)
+    
+    # Use T5ForConditionalGeneration instead of DualTokenizerT5
+    model = T5ForConditionalGeneration(model_config)
+    
+    # The lm_head is already correctly sized in T5ForConditionalGeneration,
+    # so we don't need to resize it manually
 
     # Initialize weights randomly
     def init_weights(m):
@@ -149,6 +139,7 @@ def create_model():
 
     model = prepare_for_1_58bit_training(model)
     model.apply(init_weights)
-
+    model = enable_xformers(model)
+    
     return model
 

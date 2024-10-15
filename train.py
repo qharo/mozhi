@@ -17,7 +17,7 @@ from transformers import get_scheduler, Seq2SeqTrainer, Seq2SeqTrainingArguments
 
 import torch
 from dataset import download_dataset, get_tkized_dataloaders
-from model import build_tkizers
+from model import build_tkizer
 from config import config
 import wandb
 from model import create_model
@@ -30,6 +30,14 @@ from torch.utils.data import DataLoader
 from evaluate import load
 import os
 
+# ======== SETUP ========= #
+def get_data_model_tkizer():
+    df_path = download_dataset()
+    tkizer = build_tkizer(df_path)   # build tkizer from src/tgt vocabs
+    dataloaders = get_tkized_dataloaders(df_path, tkizer)
+    model = create_model()
+    model.to(config.device)
+    return model, dataloaders, tkizer
 
 # ========= EVALUATE ========= #
 def log_perf_metrics(eval_preds, tgt_tkizer, val_loss) -> dict[str, float]:
@@ -77,13 +85,8 @@ def main():
     accelerator = Accelerator()
 
     # ====== LOAD DATA, TKIZER AND MODEL======= #
-    df_path = download_dataset()
-    tkizers = build_tkizers(df_path)   # build tkizer from src/tgt vocabs
-    tokenized_datasets = get_tkized_dataloaders(df_path, tkizers)
-    # print(next(iter(tokenized_datasets[0])))
-    model = create_model()
-    model.to(config.device)
-    # train_dataloader, val_dataloader, test_dataloader = dataloaders
+    model, dataloaders, tkizer = get_data_model_tkizer()
+    train_dataloader, val_dataloader, test_dataloader = dataloaders
 
 
  # ===== TRAINING ARGS ===== #
@@ -119,157 +122,123 @@ def main():
     #     padding="longest"
     # )
 
-    # ===== METRICS FUNCTION ===== #
-    def compute_metrics(eval_preds):
-        logits, labels = eval_preds
-        if isinstance(logits, tuple):
-            logits = logits[0]
-        decoded_preds = tkizers[1].batch_decode(logits, skip_special_tokens=True)  # Use target tokenizer
-        labels = torch.where(labels != -100, labels, tkizers[1].pad_token_id)
-        decoded_labels = tkizers[1].batch_decode(labels, skip_special_tokens=True)
+    start_epoch, start_step = 0, 0   
+    checkpoint_path = f"{config.output_dir}/checkpoint.pt"
+    if os.path.exists(checkpoint_path):
+        checkpoint = accelerator.load(checkpoint_path)
+        accelerator.unwrap_model(model).load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        lr_scheduler.load_state_dict(checkpoint['lr_scheduler_state_dict'])
+        start_epoch, start_step = checkpoint['epoch'], checkpoint['step']
 
-        # Use a metric like BLEU, ROUGE, or accuracy depending on task
-        result = calculate_bleu_rouge(decoded_preds, decoded_labels)
-        return result
 
-    def collator(batch):
-        tensor_3d = torch.stack([torch.stack(tup) for tup in zip(*batch)])
-        return {
-            "input_ids": tensor_3d[0],
-            "attention_mask": tensor_3d[1],
-            "decoder_input_ids": tensor_3d[2],
-            "labels": tensor_3d[3],
-        }
-
-    # ===== SEQ2SEQ TRAINER ===== #
-    trainer = Seq2SeqTrainer(
-        model=model,
-        args=training_args,
-        train_dataset=tokenized_datasets[0],
-        eval_dataset=tokenized_datasets[1],
-        # tokenizer=tkizers[0],  # Assuming the first tokenizer is for source
-        data_collator=collator,
-        compute_metrics=compute_metrics
+    # ===== TRAINING PARAMS ======= #
+    optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
+    lr_scheduler = get_scheduler(
+        "linear",
+        optimizer=optimizer,
+        num_warmup_steps=config.warmup_steps,
+        num_training_steps=(len(train_dataloader) * config.num_train_epochs)
     )
 
-    # Load checkpoint if exists
-    if os.path.exists(f"{config.output_dir}/checkpoint.pt"):
-        trainer.train(resume_from_checkpoint=True)
-    else:
-        trainer.train()
+    # ======= WANDB ========= #
+    if accelerator.is_main_process:
+        if config.use_wandb:
+            wandb.init(project=config.wandb_project, entity=config.wandb_entity)
+            wandb.config.update(config)
 
-    # Final evaluation on test dataset
-    test_results = trainer.evaluate(tokenized_datasets["test"])
-    print(f"Final Test Loss: {test_results['eval_loss']}")
+    # preparing using accelerate // mixed precision training
+    model, optimizer, train_dataloader, val_dataloader = accelerator.prepare(
+        model, optimizer, train_dataloader, val_dataloader
+    ) 
 
+    start_epoch, start_step = 0, 0
+    checkpoint_path = f"{config.output_dir}/checkpoint.pt"
+    if os.path.exists(checkpoint_path):
+        checkpoint = accelerator.load(checkpoint_path)
+        accelerator.unwrap_model(model).load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        lr_scheduler.load_state_dict(checkpoint['lr_scheduler_state_dict'])
+        start_epoch, start_step = checkpoint['epoch'], checkpoint['step']
 
-    # # ===== TRAINING PARAMS ======= #
-    # optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
-    # lr_scheduler = get_scheduler(
-    #     "linear",
-    #     optimizer=optimizer,
-    #     num_warmup_steps=config.warmup_steps,
-    #     num_training_steps=(len(train_dataloader) * config.num_train_epochs)
-    # )
+    # === TRAINING LOOP ===
+    print(accelerator.state)
+    for n_epoch in range(config.num_train_epochs):
 
-    # # ======= WANDB ========= #
-    # if accelerator.is_main_process:
-    #     if config.use_wandb:
-    #         wandb.init(project=config.wandb_project, entity=config.wandb_entity)
-    #         wandb.config.update(config)
+        # === EPOCH LOOP ===
 
-    # # preparing using accelerate // mixed precision training
-    # model, optimizer, train_dataloader, val_dataloader = accelerator.prepare(
-    #     model, optimizer, train_dataloader, val_dataloader
-    # ) 
-
-    # start_epoch, start_step = 0, 0
-    # checkpoint_path = f"{config.output_dir}/checkpoint.pt"
-    # if os.path.exists(checkpoint_path):
-    #     checkpoint = accelerator.load(checkpoint_path)
-    #     accelerator.unwrap_model(model).load_state_dict(checkpoint['model_state_dict'])
-    #     optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-    #     lr_scheduler.load_state_dict(checkpoint['lr_scheduler_state_dict'])
-    #     start_epoch, start_step = checkpoint['epoch'], checkpoint['step']
-
-    # # === TRAINING LOOP ===
-    # print(accelerator.state)
-    # for n_epoch in range(config.num_train_epochs):
-
-    #     # === EPOCH LOOP ===
-
-    #     total_loss = 0
-    #     progress_bar = tqdm(total=len(dataloaders[0]), desc=f"Epoch {n_epoch + 1}/{config.num_train_epochs}")
+        total_loss = 0
+        progress_bar = tqdm(total=len(dataloaders[0]), desc=f"Epoch {n_epoch + 1}/{config.num_train_epochs}")
         
-    #     best_eval_loss = float('inf')
-    #     for n_step, batch in enumerate(dataloaders[0]):
-    #         if n_step < start_step:
-    #             continue
+        best_eval_loss = float('inf')
+        for n_step, batch in enumerate(dataloaders[0]):
+            if n_step < start_step:
+                continue
             
-    #         # Move batch to the device
-    #         batch = {k: v.to(accelerator.device) for k, v in batch.items()}
+            # Move batch to the device
+            batch = {k: v.to(accelerator.device) for k, v in batch.items()}
 
-    #         with accelerator.autocast():
-    #             outputs = model(**batch)
-    #             loss = outputs.loss / config.accumulation_steps
+            with accelerator.autocast():
+                outputs = model(**batch)
+                loss = outputs.loss / config.accumulation_steps
             
-    #         accelerator.backward(loss)
-    #         total_loss += loss.item() * config.accumulation_steps
+            accelerator.backward(loss)
+            total_loss += loss.item() * config.accumulation_steps
             
-    #         if (n_step + 1) % config.accumulation_steps == 0:
-    #             optimizer.step()
-    #             lr_scheduler.step()
-    #             optimizer.zero_grad()
+            if (n_step + 1) % config.accumulation_steps == 0:
+                optimizer.step()
+                lr_scheduler.step()
+                optimizer.zero_grad()
             
-    #         progress_bar.update(1)
-    #         progress_bar.set_postfix({"Loss": total_loss / (n_step + 1)})
+            progress_bar.update(1)
+            progress_bar.set_postfix({"Loss": total_loss / (n_step + 1)})
 
-    #         if (n_step+1) % 10 == 0:
-    #             if config.use_wandb and accelerator.is_main_process:
-    #                 log_system_metrics(total_loss)
+            if (n_step+1) % 10 == 0:
+                if config.use_wandb and accelerator.is_main_process:
+                    log_system_metrics(total_loss)
 
-    #         if (n_step + 1) % 100 == 0: 
+            if (n_step + 1) % 100 == 0: 
 
 
-    #             # ==== EVALUATE === #
-    #             model.eval()
+                # ==== EVALUATE === #
+                model.eval()
 
-    #             # evaluate batch
-    #             eval_loss = 0
-    #             eval_preds = []
-    #             model.to(accelerator.device)
-    #             for eval_batch in tqdm(val_dataloader, total=len(val_dataloader), desc=f"Evaluation => Epoch {n_epoch + 1}, Step {n_step + 1}"):
-    #                 batch = {k: v.to(accelerator.device) for k, v in eval_batch.items()}
+                # evaluate batch
+                eval_loss = 0
+                eval_preds = []
+                model.to(accelerator.device)
+                for eval_batch in tqdm(val_dataloader, total=len(val_dataloader), desc=f"Evaluation => Epoch {n_epoch + 1}, Step {n_step + 1}"):
+                    batch = {k: v.to(accelerator.device) for k, v in eval_batch.items()}
 
-    #                 with torch.no_grad():
-    #                     eval_outputs = model(**eval_batch)
-    #                     eval_loss += eval_outputs.loss.item()
+                    with torch.no_grad():
+                        eval_outputs = model(**eval_batch)
+                        eval_loss += eval_outputs.loss.item()
 
-    #                     logits = eval_outputs.logits
-    #                     predictions = torch.argmax(logits, dim=-1)
-    #                     eval_preds.append({
-    #                         "predictions": predictions.detach().cpu(),
-    #                         "labels": eval_batch["labels"].detach().cpu()
-    #                     })
+                        logits = eval_outputs.logits
+                        predictions = torch.argmax(logits, dim=-1)
+                        eval_preds.append({
+                            "predictions": predictions.detach().cpu(),
+                            "labels": eval_batch["labels"].detach().cpu()
+                        })
 
-    #             if config.use_wandb and accelerator.is_main_process:
-    #                 log_perf_metrics(eval_preds, tkizers[1], (eval_loss / len(val_dataloader)))
+                if config.use_wandb and accelerator.is_main_process:
+                    log_perf_metrics(eval_preds, tkizer, (eval_loss / len(val_dataloader)))
 
     #             print(f"Process {accelerator.process_index} || Epoch {n_epoch + 1}, Step {n_step + 1}: Eval Loss: {eval_loss:.4f}")
 
-    #             if eval_loss < best_eval_loss:
-    #                 best_eval_loss = eval_loss
-    #                 os.makedirs(config.output_dir, exist_ok=True)    
-    #                 checkpoint = {
-    #                     'epoch': n_epoch,
-    #                     'step': n_step,
-    #                     'model_state_dict': accelerator.unwrap_model(model).state_dict(),
-    #                     'optimizer_state_dict': optimizer.state_dict(),
-    #                     'lr_scheduler_state_dict': lr_scheduler.state_dict(),
-    #                     'best_eval_loss': best_eval_loss
-    #                 }
-    #                 accelerator.save(checkpoint, f"{config.output_dir}/checkpoint.pt")
-    #                 # save_checkpoint(accelerator, model, optimizer, lr_scheduler, n_epoch, n_step, best_eval_loss)
+                if eval_loss < best_eval_loss:
+                    best_eval_loss = eval_loss
+                    os.makedirs(config.output_dir, exist_ok=True)    
+                    checkpoint = {
+                        'epoch': epoch,
+                        'step': step,
+                        'model_state_dict': accelerator.unwrap_model(model).state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'lr_scheduler_state_dict': lr_scheduler.state_dict(),
+                        'best_eval_loss': best_eval_loss
+                    }
+                    accelerator.save(checkpoint, f"{config.output_dir}/checkpoint.pt")
+                    # save_checkpoint(accelerator, model, optimizer, lr_scheduler, n_epoch, n_step, best_eval_loss)
 
     #             model.train() 
 

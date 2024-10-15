@@ -45,13 +45,8 @@ def download_dataset() -> str:
 
 # from np arrays create dataloaders
 # np_array => dataloaders
-
-# From np arrays create dataloaders
-def create_dataloaders(np_input_ids, np_attention_mask, np_decoder_input_ids, np_labels):
-    # Convert the numpy arrays to PyTorch tensors
-    tensors = [torch.tensor(arr, dtype=torch.long) for arr in (np_input_ids, np_attention_mask, np_decoder_input_ids, np_labels)]
-    
-    # Create a TensorDataset with all tensors
+def create_dataloaders(np_input_ids, np_attention_mask, np_decoder_ids, np_labels):
+    tensors = [torch.tensor(arr, dtype=torch.long) for arr in (np_input_ids, np_attention_mask, np_decoder_ids, np_labels)]
     dataset = TensorDataset(*tensors)
     
     # Split the dataset into train, validation, and test sets
@@ -59,62 +54,40 @@ def create_dataloaders(np_input_ids, np_attention_mask, np_decoder_input_ids, np
     sizes.append(len(dataset) - sum(sizes))
     datasets = random_split(dataset, sizes)
     
-    return datasets
-    # # Optionally, define the collate function to create a dictionary for DataLoader
-    # def collate_fn(batch):
-    #     return {
-    #         'input_ids': torch.stack([item[0] for item in batch]),
-    #         'attention_mask': torch.stack([item[1] for item in batch]),
-    #         'decoder_input_ids': torch.stack([item[2] for item in batch]),
-    #         'labels': torch.stack([item[3] for item in batch])
-    #     }
+    def collate_fn(batch):
+        return {k: torch.stack(v) for k, v in zip(['input_ids', 'attention_mask',"decoder_input_ids", 'labels'], zip(*batch))}
     
     # # Create DataLoaders for train, validation, and test sets
     # return [DataLoader(ds, batch_size=config.batch_size, shuffle=(i == 0), num_workers=2, pin_memory=True, collate_fn=collate_fn) for i, ds in enumerate(datasets)]
 
-
-# From df_path and tokenizers, create DataLoaders
-def get_tkized_dataloaders(df_path, tkizers):
-    # Define cache files for input_ids, attention_mask, decoder_input_ids, and labels
-    cache_files = ["data/input_ids.npy", "data/attention_mask.npy", "data/decoder_input_ids.npy", "data/labels.npy"]
-    
-    # If the tokenized data already exists as NumPy arrays, load them directly
+# from df_path, tokenizers
+# df_path, tkizers => dataloaders
+def get_tkized_dataloaders(df_path, tkizer):
+    cache_files = ["data/input_ids.npy", "data/attention_mask.npy",  "data/decoder_input_ids.npy", "data/labels.npy"]
     if all(os.path.exists(f) for f in cache_files):
         return create_dataloaders(*[np.load(f) for f in cache_files])
-    
-    # Load the CSV data and limit to 500,000 rows (adjust this based on your needs)
-    df = pd.read_csv(df_path)
-    
-    # Load the source and target tokenizers
-    src_tkizer, tgt_tkizer = tkizers
-    
-    # Create numpy arrays to hold tokenized data
-    arrays = [np.zeros((len(df), config.max_length)) for _ in range(4)]  
-    
 
-    with Pool(processes=cpu_count()) as pool:
-    # Tokenize the source and target text in bulk, outside the loop
-        for i, row in tqdm(df.iterrows(), total=len(df), desc="Tokenizing"):
-            # Tokenize the source for input_ids and attention_mask
-            # src_tokens = src_tkizer(row['src'], padding='max_length', truncation=True, max_length=config.max_length)
-            src_tokens = src_tkizer(row['src'])
-            arrays[0][i][:len(src_tokens['input_ids'])] = src_tokens['input_ids'][:config.max_length]
-            arrays[1][i][:len(src_tokens['attention_mask'])] = src_tokens['attention_mask'][:config.max_length]
-            
-            # Tokenize the target for labels
-            # tgt_tokens = tgt_tkizer(row['tgt'], padding='max_length', truncation=True, max_length=config.max_length)
-            tgt_tokens = tgt_tkizer(row['tgt'])
-            arrays[3][i][:len(tgt_tokens['input_ids'])] = tgt_tokens['input_ids'][:config.max_length]  # labels
+    df = pd.read_csv(df_path).head(500000)
+    arrays = [np.zeros((len(df), config.max_length)) for _ in range(4)]  # Now 4 arrays instead of 3
 
-    # Create decoder_input_ids by shifting target tokens to the right
-    arrays[2][:, 1:] = arrays[3][:, :-1]  # Shift the labels to the right
-    arrays[2][:, 0] = tgt_tkizer.pad_token_id  # Replace the first token with <pad> or <sos>
+    for i, row in tqdm(df.iterrows(), total=len(df), desc="Tokenizing"):
+        # Tokenize source text
+        src_tokens = tkizer(row['src'], max_length=config.max_length, padding='max_length', truncation=True)
+        arrays[0][i] = src_tokens['input_ids']
+        arrays[1][i] = src_tokens['attention_mask']
 
-    # Save the tokenized arrays as NumPy files
-    for arr, name in zip(arrays, ['input_ids', 'attention_mask', 'decoder_input_ids', 'labels']):
-        np.save(f"data/{name}.npy", arr)
-    
-    # Return the dataloaders using the saved numpy arrays
+        # Tokenize target text
+        tgt_tokens = tkizer(row['tgt'], max_length=config.max_length, padding='max_length', truncation=True)
+        arrays[3][i] = tgt_tokens['input_ids']
+        
+    # Create decoder_input_ids outside the loop
+    arrays[3] = np.roll(arrays[2], shift=1, axis=1)
+    arrays[3][:, 0] = tkizer.pad_token_id  #
+
+    # Save arrays
+    for arr, name in zip(arrays, ['input_ids', 'attention_mask','decoder_input_ids', 'labels']):
+        np.save(f"data/{name}", arr)
+
     return create_dataloaders(*arrays)
 
 # from df_path, tokenizers
