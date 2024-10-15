@@ -139,7 +139,7 @@ def main():
         train_dataset=tokenized_datasets[0],
         eval_dataset=tokenized_datasets[1],
         # tokenizer=tkizers[0],  # Assuming the first tokenizer is for source
-        data_collator= lambda x: {"input_ids": torch.stack(x[0]), "attention_mask": torch.stack(x[1]), "labels": torch.stack(x[2])},
+        data_collator= lambda x: {"input_ids": torch.stack(x[0]), "attention_mask": torch.stack(x[1]), "decoder_input_ids": torch.stack(x[2]), "labels": torch.stack(x[3])},
         compute_metrics=compute_metrics
     )
 

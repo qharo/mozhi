@@ -11,6 +11,7 @@ import os
 import torch
 from functools import partial
 from torch.utils.data import TensorDataset, DataLoader
+from multiprocessing import Pool, cpu_count
 
 # creates a DataFrame from HF Dataset
 # => str (DataFrame save path)
@@ -44,40 +45,101 @@ def download_dataset() -> str:
 
 # from np arrays create dataloaders
 # np_array => dataloaders
-def create_dataloaders(np_input_ids, np_attention_mask, np_labels):
-    tensors = [torch.tensor(arr, dtype=torch.long) for arr in (np_input_ids, np_attention_mask, np_labels)]
+
+# From np arrays create dataloaders
+def create_dataloaders(np_input_ids, np_attention_mask, np_decoder_input_ids, np_labels):
+    # Convert the numpy arrays to PyTorch tensors
+    tensors = [torch.tensor(arr, dtype=torch.long) for arr in (np_input_ids, np_attention_mask, np_decoder_input_ids, np_labels)]
+    
+    # Create a TensorDataset with all tensors
     dataset = TensorDataset(*tensors)
+    
+    # Split the dataset into train, validation, and test sets
     sizes = [int(config.train_split * len(dataset)), int(config.val_split * len(dataset))]
     sizes.append(len(dataset) - sum(sizes))
     datasets = random_split(dataset, sizes)
     
     return datasets
-
-    def collate_fn(batch):
-        return {k: torch.stack(v) for k, v in zip(['input_ids', 'attention_mask', 'labels'], zip(*batch))}
+    # # Optionally, define the collate function to create a dictionary for DataLoader
+    # def collate_fn(batch):
+    #     return {
+    #         'input_ids': torch.stack([item[0] for item in batch]),
+    #         'attention_mask': torch.stack([item[1] for item in batch]),
+    #         'decoder_input_ids': torch.stack([item[2] for item in batch]),
+    #         'labels': torch.stack([item[3] for item in batch])
+    #     }
     
-    return [DataLoader(ds, batch_size=config.batch_size, shuffle=(i==0), num_workers=2, pin_memory=True, collate_fn=collate_fn) for i, ds in enumerate(datasets)]
+    # # Create DataLoaders for train, validation, and test sets
+    # return [DataLoader(ds, batch_size=config.batch_size, shuffle=(i == 0), num_workers=2, pin_memory=True, collate_fn=collate_fn) for i, ds in enumerate(datasets)]
 
-# from df_path, tokenizers
-# df_path, tkizers => dataloaders
+
+# From df_path and tokenizers, create DataLoaders
 def get_tkized_dataloaders(df_path, tkizers):
-    cache_files = ["data/input_ids.npy", "data/attention_mask.npy", "data/labels.npy"]
+    # Define cache files for input_ids, attention_mask, decoder_input_ids, and labels
+    cache_files = ["data/input_ids.npy", "data/attention_mask.npy", "data/decoder_input_ids.npy", "data/labels.npy"]
+    
+    # If the tokenized data already exists as NumPy arrays, load them directly
     if all(os.path.exists(f) for f in cache_files):
         return create_dataloaders(*[np.load(f) for f in cache_files])
     
-    df = pd.read_csv(df_path).head(500000)
+    # Load the CSV data and limit to 500,000 rows (adjust this based on your needs)
+    df = pd.read_csv(df_path)
+    
+    # Load the source and target tokenizers
     src_tkizer, tgt_tkizer = tkizers
-    arrays = [np.zeros((len(df), config.max_length)) for _ in range(3)]
     
-    for i, row in tqdm(df.iterrows(), total=len(df), desc="Tokenizing"):
-        for j, (tkizer, col) in enumerate(zip([src_tkizer, src_tkizer, tgt_tkizer], ['src', 'src', 'tgt'])):
-            tokens = tkizer(row[col])
-            arrays[j][i][:len(tokens['input_ids'])] = tokens['input_ids' if j != 1 else 'attention_mask'][:config.max_length]
+    # Create numpy arrays to hold tokenized data
+    arrays = [np.zeros((len(df), config.max_length)) for _ in range(4)]  
     
-    for arr, name in zip(arrays, ['input_ids', 'attention_mask', 'labels']):
-        np.save(f"data/{name}", arr)
+
+    with Pool(processes=cpu_count()) as pool:
+    # Tokenize the source and target text in bulk, outside the loop
+        for i, row in tqdm(df.iterrows(), total=len(df), desc="Tokenizing"):
+            # Tokenize the source for input_ids and attention_mask
+            # src_tokens = src_tkizer(row['src'], padding='max_length', truncation=True, max_length=config.max_length)
+            src_tokens = src_tkizer(row['src'])
+            arrays[0][i][:len(src_tokens['input_ids'])] = src_tokens['input_ids'][:config.max_length]
+            arrays[1][i][:len(src_tokens['attention_mask'])] = src_tokens['attention_mask'][:config.max_length]
+            
+            # Tokenize the target for labels
+            # tgt_tokens = tgt_tkizer(row['tgt'], padding='max_length', truncation=True, max_length=config.max_length)
+            tgt_tokens = tgt_tkizer(row['tgt'])
+            arrays[3][i][:len(tgt_tokens['input_ids'])] = tgt_tokens['input_ids'][:config.max_length]  # labels
+
+    # Create decoder_input_ids by shifting target tokens to the right
+    arrays[2][:, 1:] = arrays[3][:, :-1]  # Shift the labels to the right
+    arrays[2][:, 0] = tgt_tkizer.pad_token_id  # Replace the first token with <pad> or <sos>
+
+    # Save the tokenized arrays as NumPy files
+    for arr, name in zip(arrays, ['input_ids', 'attention_mask', 'decoder_input_ids', 'labels']):
+        np.save(f"data/{name}.npy", arr)
     
+    # Return the dataloaders using the saved numpy arrays
     return create_dataloaders(*arrays)
+
+# from df_path, tokenizers
+# df_path, tkizers => dataloaders
+# def get_tkized_dataloaders(df_path, tkizers):
+#     cache_files = ["data/input_ids.npy", "data/attention_mask.npy", "data/labels.npy"]
+#     if all(os.path.exists(f) for f in cache_files):
+#         return create_dataloaders(*[np.load(f) for f in cache_files])
+    
+#     df = pd.read_csv(df_path).head(500000)
+#     src_tkizer, tgt_tkizer = tkizers
+#     arrays = [np.zeros((len(df), config.max_length)) for _ in range(3)]
+    
+#     for i, row in tqdm(df.iterrows(), total=len(df), desc="Tokenizing"):
+#         for j, (tkizer, col) in enumerate(zip([src_tkizer, src_tkizer, tgt_tkizer], ['src', 'src', 'tgt'])):
+#             tokens = tkizer(row[col])
+#             arrays[j][i][:len(tokens['input_ids'])] = tokens['input_ids' if j != 1 else 'attention_mask'][:config.max_length]
+    
+#     for arr, name in zip(arrays, ['input_ids', 'attention_mask', 'labels']):
+#         np.save(f"data/{name}", arr)
+    
+#     return create_dataloaders(*arrays)
+
+
+
 
 # serves from DataFrame
 # class RawDataset(Dataset):
