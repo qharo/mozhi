@@ -58,7 +58,7 @@ def create_dataloaders(np_input_ids, np_attention_mask, np_decoder_ids, np_label
         return {k: torch.stack(v) for k, v in zip(['input_ids', 'attention_mask',"decoder_input_ids", 'labels'], zip(*batch))}
     
     # # Create DataLoaders for train, validation, and test sets
-    # return [DataLoader(ds, batch_size=config.batch_size, shuffle=(i == 0), num_workers=2, pin_memory=True, collate_fn=collate_fn) for i, ds in enumerate(datasets)]
+    return [DataLoader(ds, batch_size=config.batch_size, shuffle=(i == 0), num_workers=1, pin_memory=True, collate_fn=collate_fn) for i, ds in enumerate(datasets)]
 
 # from df_path, tokenizers
 # df_path, tkizers => dataloaders

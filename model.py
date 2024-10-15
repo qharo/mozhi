@@ -1,7 +1,7 @@
 import torch
 from transformers import T5ForConditionalGeneration, T5Config, AutoTokenizer
 import torch.nn as nn
-from torch.nn import Module, Linear, Identity, Parameter, Embedding, functional as F
+from torch.nn import Module, Linear, Identity, Parameter, Embedding, RMSNorm, functional as F
 from config import config
 from datasets import IterableDataset
 import xformers.ops as xops
@@ -26,7 +26,7 @@ class BitLinear(Module):
     def __init__(self, in_features, out_features):
         super().__init__()
         self.weight = Parameter(torch.Tensor(out_features, in_features))
-        self.rms_norm = torch.nn.RMSNorm(in_features)
+        self.rms_norm = RMSNorm(in_features)
 
     def forward(self, x):
         # Implement 1-bit forward pass here

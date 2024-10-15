@@ -16,12 +16,10 @@ class Config:
 
     # tkizer config
     tkizer_save: bool = True
-    src_tkizer_save_path: str = 'data/src_tkizer'
-    tgt_tkizer_save_path: str = 'data/tgt_tkizer'
+    tkizer_save_path: str = 'data/tkizer'
     source_lang: str = "en"
     target_lang: str = "ta" # AI4Bharat Identifier
-    src_vocab_size = 30000
-    tgt_vocab_size = 30000
+    vocab_size = 30000
 
     # model arch
     model_name: str = "google-t5/t5-base"
@@ -40,6 +38,7 @@ class Config:
     num_train_epochs: int = 3
     output_dir: str = "data/training"
     accumulation_steps = 4
+    eval_save_steps = 100
 
     # W&B settings
     use_wandb: bool = True

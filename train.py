@@ -90,25 +90,25 @@ def main():
 
 
  # ===== TRAINING ARGS ===== #
-    training_args = Seq2SeqTrainingArguments(
-        output_dir=config.output_dir,
-        evaluation_strategy="steps",
-        eval_steps=config.eval_save_steps,  # Evaluate every 100 steps
-        save_steps=config.eval_save_steps,  # Save checkpoint every 100 steps
-        logging_steps=10,
-        learning_rate=config.learning_rate,
-        per_device_train_batch_size=config.batch_size,
-        per_device_eval_batch_size=config.batch_size,
-        weight_decay=config.weight_decay,
-        save_total_limit=3,  # Max number of checkpoints to keep
-        num_train_epochs=config.num_train_epochs,
-        predict_with_generate=True,  # For seq2seq models
-        warmup_steps=config.warmup_steps,
-        gradient_accumulation_steps=config.accumulation_steps,
-        fp16=True,
-        report_to="wandb" if config.use_wandb else None,
-        load_best_model_at_end=True
-    )
+    # training_args = Seq2SeqTrainingArguments(
+    #     output_dir=config.output_dir,
+    #     evaluation_strategy="steps",
+    #     eval_steps=config.eval_save_steps,  # Evaluate every 100 steps
+    #     save_steps=config.eval_save_steps,  # Save checkpoint every 100 steps
+    #     logging_steps=10,
+    #     learning_rate=config.learning_rate,
+    #     per_device_train_batch_size=config.batch_size,
+    #     per_device_eval_batch_size=config.batch_size,
+    #     weight_decay=config.weight_decay,
+    #     save_total_limit=3,  # Max number of checkpoints to keep
+    #     num_train_epochs=config.num_train_epochs,
+    #     predict_with_generate=True,  # For seq2seq models
+    #     warmup_steps=config.warmup_steps,
+    #     gradient_accumulation_steps=config.accumulation_steps,
+    #     fp16=True,
+    #     report_to="wandb" if config.use_wandb else None,
+    #     load_best_model_at_end=True
+    # )
 
     # ===== WANDB CONFIGURATION ===== #
     if config.use_wandb and accelerator.is_main_process:
@@ -162,7 +162,6 @@ def main():
         start_epoch, start_step = checkpoint['epoch'], checkpoint['step']
 
     # === TRAINING LOOP ===
-    print(accelerator.state)
     for n_epoch in range(config.num_train_epochs):
 
         # === EPOCH LOOP ===
@@ -230,8 +229,8 @@ def main():
                     best_eval_loss = eval_loss
                     os.makedirs(config.output_dir, exist_ok=True)    
                     checkpoint = {
-                        'epoch': epoch,
-                        'step': step,
+                        'epoch': n_epoch,
+                        'step': n_step,
                         'model_state_dict': accelerator.unwrap_model(model).state_dict(),
                         'optimizer_state_dict': optimizer.state_dict(),
                         'lr_scheduler_state_dict': lr_scheduler.state_dict(),
