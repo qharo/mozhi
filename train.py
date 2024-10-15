@@ -132,6 +132,15 @@ def main():
         result = calculate_bleu_rouge(decoded_preds, decoded_labels)
         return result
 
+    def collator(batch):
+        tensor_3d = torch.stack([torch.stack(tup) for tup in zip(*batch)])
+        return {
+            "input_ids": tensor_3d[0],
+            "attention_mask": tensor_3d[1],
+            "decoder_input_ids": tensor_3d[2],
+            "labels": tensor_3d[3],
+        }
+
     # ===== SEQ2SEQ TRAINER ===== #
     trainer = Seq2SeqTrainer(
         model=model,
@@ -139,7 +148,7 @@ def main():
         train_dataset=tokenized_datasets[0],
         eval_dataset=tokenized_datasets[1],
         # tokenizer=tkizers[0],  # Assuming the first tokenizer is for source
-        data_collator= lambda x: {"input_ids": torch.stack(x[0]), "attention_mask": torch.stack(x[1]), "decoder_input_ids": torch.stack(x[2]), "labels": torch.stack(x[3])},
+        data_collator=collator,
         compute_metrics=compute_metrics
     )
 
