@@ -31,6 +31,7 @@ from evaluate import load
 import os
 
 # ======== SETUP ========= #
+# get model, dataloaders and tokenizer
 def get_data_model_tkizer():
     df_path = download_dataset()
     tkizer = build_tkizer(df_path)   # build tkizer from src/tgt vocabs
@@ -39,7 +40,7 @@ def get_data_model_tkizer():
     model.to(config.device)
     return model, dataloaders, tkizer
 
-# ========= EVALUATE ========= #
+# BLEU, Validation Loss
 def log_perf_metrics(eval_preds, tgt_tkizer, val_loss) -> dict[str, float]:
     metric = load("sacrebleu")
     predictions = []
@@ -58,6 +59,7 @@ def log_perf_metrics(eval_preds, tgt_tkizer, val_loss) -> dict[str, float]:
     wandb.log(result)
 
 
+# CPU Usage, GPU Usage, Memory, etc
 def log_system_metrics(total_loss):    
     cpu_percent = psutil.cpu_percent()
     memory_percent = psutil.virtual_memory().percent
@@ -89,38 +91,12 @@ def main():
     train_dataloader, val_dataloader, test_dataloader = dataloaders
 
 
- # ===== TRAINING ARGS ===== #
-    # training_args = Seq2SeqTrainingArguments(
-    #     output_dir=config.output_dir,
-    #     evaluation_strategy="steps",
-    #     eval_steps=config.eval_save_steps,  # Evaluate every 100 steps
-    #     save_steps=config.eval_save_steps,  # Save checkpoint every 100 steps
-    #     logging_steps=10,
-    #     learning_rate=config.learning_rate,
-    #     per_device_train_batch_size=config.batch_size,
-    #     per_device_eval_batch_size=config.batch_size,
-    #     weight_decay=config.weight_decay,
-    #     save_total_limit=3,  # Max number of checkpoints to keep
-    #     num_train_epochs=config.num_train_epochs,
-    #     predict_with_generate=True,  # For seq2seq models
-    #     warmup_steps=config.warmup_steps,
-    #     gradient_accumulation_steps=config.accumulation_steps,
-    #     fp16=True,
-    #     report_to="wandb" if config.use_wandb else None,
-    #     load_best_model_at_end=True
-    # )
-
     # ===== WANDB CONFIGURATION ===== #
     if config.use_wandb and accelerator.is_main_process:
         wandb.init(project=config.wandb_project, entity=config.wandb_entity)
         wandb.config.update(config)
 
-    # ===== DATA COLLATOR ===== #
-    # data_collator = DataCollatorForSeq2Seq(
-    #     tokenizer=tkizers[0],  # Assuming the first tokenizer is source tokenizer
-    #     model=model,
-    #     padding="longest"
-    # )
+
 
     start_epoch, start_step = 0, 0   
     checkpoint_path = f"{config.output_dir}/checkpoint.pt"
@@ -196,10 +172,10 @@ def main():
                 if config.use_wandb and accelerator.is_main_process:
                     log_system_metrics(total_loss)
 
+
+            # ===================== EVALUATE ==================== #
+            # perform validation, log performance metrics and save model checkpoint
             if (n_step + 1) % 100 == 0: 
-
-
-                # ==== EVALUATE === #
                 model.eval()
 
                 # evaluate batch
@@ -220,11 +196,11 @@ def main():
                             "labels": eval_batch["labels"].detach().cpu()
                         })
 
+                # log performance metrics
                 if config.use_wandb and accelerator.is_main_process:
                     log_perf_metrics(eval_preds, tkizer, (eval_loss / len(val_dataloader)))
 
-    #             print(f"Process {accelerator.process_index} || Epoch {n_epoch + 1}, Step {n_step + 1}: Eval Loss: {eval_loss:.4f}")
-
+                # save checkpoint
                 if eval_loss < best_eval_loss:
                     best_eval_loss = eval_loss
                     os.makedirs(config.output_dir, exist_ok=True)    
@@ -237,30 +213,55 @@ def main():
                         'best_eval_loss': best_eval_loss
                     }
                     accelerator.save(checkpoint, f"{config.output_dir}/checkpoint.pt")
-                    # save_checkpoint(accelerator, model, optimizer, lr_scheduler, n_epoch, n_step, best_eval_loss)
 
-    #             model.train() 
+                model.train() 
+                # === END EVALUATE === #
 
-    #             # === END EVALUATE === #
+        start_step = 0
+    # === END TRAIN LOOP === #
 
-    #     start_step = 0
 
-    # # === END TRAIN LOOP === #
-
-    # model.eval()
-    # test_loss = 0
-    # for test_batch in test_dataloader:
-    #     with torch.no_grad():
-    #         test_outputs = model(**test_batch)
-    #         test_loss += test_outputs.loss.item()
-    # test_loss /= len(test_dataloader)
-    # print(f"Final Test Loss: {test_loss:.4f}")
+    # ==== FINAL TEST ==== #
+    model.eval()
+    test_loss = 0
+    for test_batch in test_dataloader:
+        with torch.no_grad():
+            test_outputs = model(**test_batch)
+            test_loss += test_outputs.loss.item()
+    test_loss /= len(test_dataloader)
+    print(f"Final Test Loss: {test_loss:.4f}")
 
 
 if __name__ == '__main__':
     main()
 
+    # ===== DATA COLLATOR ===== #
+    # data_collator = DataCollatorForSeq2Seq(
+    #     tokenizer=tkizers[0],  # Assuming the first tokenizer is source tokenizer
+    #     model=model,
+    #     padding="longest"
+    # )
 
+ # ===== TRAINING ARGS ===== #
+    # training_args = Seq2SeqTrainingArguments(
+    #     output_dir=config.output_dir,
+    #     evaluation_strategy="steps",
+    #     eval_steps=config.eval_save_steps,  # Evaluate every 100 steps
+    #     save_steps=config.eval_save_steps,  # Save checkpoint every 100 steps
+    #     logging_steps=10,
+    #     learning_rate=config.learning_rate,
+    #     per_device_train_batch_size=config.batch_size,
+    #     per_device_eval_batch_size=config.batch_size,
+    #     weight_decay=config.weight_decay,
+    #     save_total_limit=3,  # Max number of checkpoints to keep
+    #     num_train_epochs=config.num_train_epochs,
+    #     predict_with_generate=True,  # For seq2seq models
+    #     warmup_steps=config.warmup_steps,
+    #     gradient_accumulation_steps=config.accumulation_steps,
+    #     fp16=True,
+    #     report_to="wandb" if config.use_wandb else None,
+    #     load_best_model_at_end=True
+    # )
 
 
 # # ======== SETUP ========= #

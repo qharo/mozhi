@@ -38,7 +38,7 @@ class BitLinear(Module):
         self.scale = scale
         w_quant = w + (w_new - w).detach()
         return F.linear(x_quant, w_quant) / scale
-
+# =========================================== #
 
 # switch model's nn.Linear to BitLinear
 # model => bitnet_model
@@ -53,8 +53,7 @@ def prepare_for_1_58bit_training(model):
 
     return model
 
-
-
+# build a tokenizer from data (DataFrame, specifically)
 def build_tkizer(df_path: str):
     if config.tkizer_save:
         if os.path.exists(config.tkizer_save_path):
@@ -101,16 +100,7 @@ def build_tkizer(df_path: str):
 
     return tkizer
 
-
-def enable_xformers(model):
-    for layer in model.encoder.block + model.decoder.block:
-        layer.layer[0].SelfAttention.process_mask = xops.memory_efficient_attention
-        if hasattr(layer.layer[-1], 'EncDecAttention'):
-            layer.layer[-1].EncDecAttention.process_mask = xops.memory_efficient_attention
-    return model
-
-
-# create new model => 
+# create new model => BitLinear Model
 def create_model():
     model_config = T5Config(
         vocab_size=config.vocab_size,  # Use a single vocab_size
@@ -143,3 +133,9 @@ def create_model():
     
     return model
 
+def enable_xformers(model):
+    for layer in model.encoder.block + model.decoder.block:
+        layer.layer[0].SelfAttention.process_mask = xops.memory_efficient_attention
+        if hasattr(layer.layer[-1], 'EncDecAttention'):
+            layer.layer[-1].EncDecAttention.process_mask = xops.memory_efficient_attention
+    return model
