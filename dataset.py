@@ -11,7 +11,6 @@ import os
 import torch
 from functools import partial
 from torch.utils.data import TensorDataset, DataLoader
-from multiprocessing import Pool, cpu_count
 
 # creates a DataFrame from HF Dataset
 # => str (DataFrame save path)
@@ -68,7 +67,7 @@ def get_tkized_dataloaders(df_path, tkizer):
     if all(os.path.exists(f) for f in cache_files):
         return create_dataloaders(*[np.load(f) for f in cache_files])
 
-    df = pd.read_csv(df_path).head(500000)
+    df = pd.read_csv(df_path)
     arrays = [np.zeros((len(df), config.max_length)) for _ in range(4)]  # Now 4 arrays instead of 3
 
     for i, row in tqdm(df.iterrows(), total=len(df), desc="Tokenizing"):

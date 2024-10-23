@@ -38,11 +38,13 @@ class Config:
     num_train_epochs: int = 3
     output_dir: str = "data/training"
     accumulation_steps = 4
-    eval_save_steps = 100
+    eval_save_steps = 1000
 
     # W&B settings
-    use_wandb: bool = False
+    use_wandb: bool = True
     wandb_project: str = "mozhi"
     wandb_entity: str = "qharo"  # Set this to your wandb username or team name
 
 config = Config()
+
+
