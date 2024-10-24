@@ -41,10 +41,9 @@ class Config:
     eval_save_steps = 1000
 
     # W&B settings
-    use_wandb: bool = True
+    use_wandb: bool = False
     wandb_project: str = "mozhi"
     wandb_entity: str = "qharo"  # Set this to your wandb username or team name
 
 config = Config()
-
 

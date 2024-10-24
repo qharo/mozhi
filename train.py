@@ -25,8 +25,13 @@ def cleanup():
 
 
 def collate_fn(batch):
-    return {k: torch.stack(v) for k, v in zip(['input_ids', 'attention_mask',"decoder_input_ids", 'labels'], zip(*batch))}
-
+    """
+    Collate function to create batches
+    """
+    return {
+        k: torch.stack([example[k] for example in batch])
+        for k in batch[0].keys()
+    }
 
 def get_data_model_tkizer(rank, world_size):
     df_path = download_dataset()
@@ -40,13 +45,13 @@ def get_data_model_tkizer(rank, world_size):
     
 
     train_dataloader = torch.utils.data.DataLoader(
-        datasets[0], sampler=train_sampler, batch_size=config.batch_size, num_workers=4, collate_fn=collate_fn
+        datasets[0], sampler=train_sampler, batch_size=config.batch_size, num_workers=1, collate_fn=collate_fn
     )
     val_dataloader = torch.utils.data.DataLoader(
-        datasets[1], sampler=val_sampler, batch_size=config.batch_size, num_workers=4, collate_fn=collate_fn
+        datasets[1], sampler=val_sampler, batch_size=config.batch_size, num_workers=1, collate_fn=collate_fn
     )
     test_dataloader = torch.utils.data.DataLoader(
-        datasets[2], sampler=test_sampler, batch_size=config.batch_size, num_workers=4, collate_fn=collate_fn
+        datasets[2], sampler=test_sampler, batch_size=config.batch_size, num_workers=1, collate_fn=collate_fn
     )
     
     model = create_model()
