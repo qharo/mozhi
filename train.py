@@ -23,6 +23,29 @@ def setup(rank, world_size):
 def cleanup():
     dist.destroy_process_group()
 
+def init_wandb(rank):
+    """Initialize wandb with proper error handling"""
+    if rank == 0 and config.use_wandb:
+        try:
+            # Check if WANDB_API_KEY is set in environment
+            api_key = os.getenv('WANDB_API_KEY')
+            if api_key is None:
+                print("Warning: WANDB_API_KEY not found in environment. Disabling wandb logging.")
+                config.use_wandb = False
+                return False
+            
+            wandb.login(key=api_key)
+            wandb.init(
+                project=config.wandb_project,
+                entity=config.wandb_entity,
+                config=config.__dict__
+            )
+            return True
+        except Exception as e:
+            print(f"Warning: Failed to initialize wandb: {str(e)}. Disabling wandb logging.")
+            config.use_wandb = False
+            return False
+    return False
 
 def collate_fn(batch):
     """
@@ -106,9 +129,8 @@ def main(rank, world_size):
     model, dataloaders, tkizer = get_data_model_tkizer(rank, world_size)
     train_dataloader, val_dataloader, test_dataloader = dataloaders
 
-    if rank == 0 and config.use_wandb:
-        wandb.init(project=config.wandb_project, entity=config.wandb_entity)
-        wandb.config.update(config)
+    
+    wandb_enabled = init_wandb(rank)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
     lr_scheduler = get_scheduler(
@@ -135,6 +157,7 @@ def main(rank, world_size):
         best_eval_loss = float('inf')
         for n_step, batch in enumerate(train_dataloader):
             if n_step < start_step:
+                progress_bar.update(1)
                 continue
         
             batch = {k: v.to(rank) for k, v in batch.items()}
@@ -155,10 +178,10 @@ def main(rank, world_size):
                 progress_bar.update(1)
                 progress_bar.set_postfix({"Loss": total_loss / (n_step + 1)})
 
-                if (n_step+1) % 10 == 0 and config.use_wandb:
-                    log_system_metrics(total_loss)
+                if (n_step+1) % 10 == 0 and wandb_enabled:
+                    log_system_metrics(loss)
 
-            if (n_step + 1) % 100 == 0: 
+            if (n_step + 1) % config.eval_save_steps == 0: 
                 model.eval()
                 eval_loss = 0
                 eval_preds = []
@@ -179,7 +202,7 @@ def main(rank, world_size):
                 eval_loss = eval_loss / world_size
 
                 if rank == 0:
-                    if config.use_wandb:
+                    if wandb_enabled:
                         log_perf_metrics(eval_preds, tkizer, eval_loss)
 
                     if eval_loss < best_eval_loss:

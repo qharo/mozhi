@@ -38,7 +38,7 @@ class Config:
     num_train_epochs: int = 3
     output_dir: str = "data/training"
     accumulation_steps = 4
-    eval_save_steps = 1000
+    eval_save_steps = 50
 
     # W&B settings
     use_wandb: bool = False
